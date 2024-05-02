@@ -13,9 +13,9 @@ import fetchLinksRouter from './fetch-links'
 import flowConfigRouter from './flow-config'
 import internalChatmessagesRouter from './internal-chat-messages'
 import internalPredictionRouter from './internal-predictions'
-import ipRouter from './ip'
 import getUploadFileRouter from './get-upload-file'
 import getUploadPathRouter from './get-upload-path'
+import leadsRouter from './leads'
 import loadPromptRouter from './load-prompts'
 import marketplacesRouter from './marketplaces'
 import nodeConfigRouter from './node-configs'
@@ -25,6 +25,7 @@ import nodeLoadMethodRouter from './node-load-methods'
 import nodesRouter from './nodes'
 import openaiAssistantsRouter from './openai-assistants'
 import openaiAssistantsFileRouter from './openai-assistants-files'
+import openaiAssistantsVectorStoreRouter from './openai-assistants-vector-store'
 import predictionRouter from './predictions'
 import promptListsRouter from './prompts-lists'
 import publicChatbotRouter from './public-chatbots'
@@ -53,9 +54,9 @@ router.use('/fetch-links', fetchLinksRouter)
 router.use('/flow-config', flowConfigRouter)
 router.use('/internal-chatmessage', internalChatmessagesRouter)
 router.use('/internal-prediction', internalPredictionRouter)
-router.use('/ip', ipRouter)
 router.use('/get-upload-file', getUploadFileRouter)
 router.use('/get-upload-path', getUploadPathRouter)
+router.use('/leads', leadsRouter)
 router.use('/load-prompt', loadPromptRouter)
 router.use('/marketplaces', marketplacesRouter)
 router.use('/node-config', nodeConfigRouter)
@@ -65,6 +66,7 @@ router.use('/node-load-method', nodeLoadMethodRouter)
 router.use('/nodes', nodesRouter)
 router.use('/openai-assistants', openaiAssistantsRouter)
 router.use('/openai-assistants-file', openaiAssistantsFileRouter)
+router.use('/openai-assistants-vector-store', openaiAssistantsVectorStoreRouter)
 router.use('/prediction', predictionRouter)
 router.use('/prompts-list', promptListsRouter)
 router.use('/public-chatbotConfig', publicChatbotRouter)

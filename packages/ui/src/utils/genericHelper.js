@@ -519,9 +519,9 @@ export const formatDataGridRows = (rows) => {
     }
 }
 
-export const setLocalStorageChatflow = (chatflowid, chatId) => {
+export const setLocalStorageChatflow = (chatflowid, chatId, saveObj = {}) => {
     const chatDetails = localStorage.getItem(`${chatflowid}_INTERNAL`)
-    const obj = {}
+    const obj = { ...saveObj }
     if (chatId) obj.chatId = chatId
 
     if (!chatDetails) {
@@ -535,6 +535,34 @@ export const setLocalStorageChatflow = (chatflowid, chatId) => {
             obj.chatId = chatId
             localStorage.setItem(`${chatflowid}_INTERNAL`, JSON.stringify(obj))
         }
+    }
+}
+
+export const getLocalStorageChatflow = (chatflowid) => {
+    const chatDetails = localStorage.getItem(`${chatflowid}_INTERNAL`)
+    if (!chatDetails) return {}
+    try {
+        return JSON.parse(chatDetails)
+    } catch (e) {
+        return {}
+    }
+}
+
+export const removeLocalStorageChatHistory = (chatflowid) => {
+    const chatDetails = localStorage.getItem(`${chatflowid}_INTERNAL`)
+    if (!chatDetails) return
+    try {
+        const parsedChatDetails = JSON.parse(chatDetails)
+        if (parsedChatDetails.lead) {
+            // Dont remove lead when chat is cleared
+            const obj = { lead: parsedChatDetails.lead }
+            localStorage.removeItem(`${chatflowid}_INTERNAL`)
+            localStorage.setItem(`${chatflowid}_INTERNAL`, JSON.stringify(obj))
+        } else {
+            localStorage.removeItem(`${chatflowid}_INTERNAL`)
+        }
+    } catch (e) {
+        return
     }
 }
 
@@ -641,4 +669,16 @@ export const getOS = () => {
     }
 
     return os
+}
+
+export const formatBytes = (bytes, decimals = 2) => {
+    if (!+bytes) return '0 Bytes'
+
+    const k = 1024
+    const dm = decimals < 0 ? 0 : decimals
+    const sizes = ['Bytes', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', 'YiB']
+
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
 }
