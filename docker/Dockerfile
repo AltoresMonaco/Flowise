@@ -6,13 +6,13 @@ WORKDIR /app
 # Copy your local Flowise repo into image
 COPY . .
 
-# Skip puppeteer chromium download during install
+# Skip Puppeteer Chromium download during install
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 
-# Install dependencies
+# Install all dependencies
 RUN yarn install
 
-# Build everything (both frontend and backend)
+# Build frontend and backend
 RUN yarn build
 
 # Stage 2: Runtime
@@ -23,12 +23,13 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apk add --no-cache chromium git python3 py3-pip make g++ build-base cairo-dev pango-dev curl
 
+# Set Puppeteer Chromium path
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-# Copy built app from previous stage
+# Copy built app from the previous stage
 COPY --from=build /app /app
 
-# Optional: expose port
+# Expose Flowise default port
 EXPOSE 3000
 
 # Start Flowise
