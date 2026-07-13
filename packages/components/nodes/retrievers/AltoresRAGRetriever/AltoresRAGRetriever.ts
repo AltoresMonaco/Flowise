@@ -75,12 +75,10 @@ class AltoresRAGRetriever extends BaseRetriever {
             // Surface the failure without leaking the Authorization header / API key.
             const status = axios.isAxiosError(error) ? error.response?.status : undefined
             const serverDetail = axios.isAxiosError(error)
-                ? (error.response?.data?.detail ?? error.response?.data?.message ?? error.response?.statusText)
+                ? error.response?.data?.detail ?? error.response?.data?.message ?? error.response?.statusText
                 : undefined
             const detail = serverDetail ? (typeof serverDetail === 'string' ? serverDetail : JSON.stringify(serverDetail)) : ''
-            throw new Error(
-                `Altores RAG search failed${status ? ` (HTTP ${status})` : ''} calling ${url}${detail ? `: ${detail}` : ''}`
-            )
+            throw new Error(`Altores RAG search failed${status ? ` (HTTP ${status})` : ''} calling ${url}${detail ? `: ${detail}` : ''}`)
         }
     }
 }
@@ -172,8 +170,7 @@ class AltoresRAGRetriever_Retrievers implements INode {
         const filterStr = nodeData.inputs?.filter as string
 
         const topK = topKInput !== undefined && topKInput !== '' ? Number(topKInput) : 5
-        const parsedMinScore =
-            minScoreInput !== undefined && minScoreInput !== '' ? parseFloat(minScoreInput as string) : undefined
+        const parsedMinScore = minScoreInput !== undefined && minScoreInput !== '' ? parseFloat(minScoreInput as string) : undefined
         const minScore = parsedMinScore !== undefined && !isNaN(parsedMinScore) ? parsedMinScore : undefined
         const filter = filterStr ? JSON.parse(filterStr) : undefined
 
