@@ -12,6 +12,7 @@ interface AltoresRAGRetrieverInput extends BaseRetrieverInput {
     dataClass: string
     minScore?: number
     filter?: ICommonObject
+    retrievalMode?: string
 }
 
 class AltoresRAGRetriever extends BaseRetriever {
@@ -24,6 +25,7 @@ class AltoresRAGRetriever extends BaseRetriever {
     dataClass: string
     minScore?: number
     filter?: ICommonObject
+    retrievalMode?: string
 
     constructor(fields: AltoresRAGRetrieverInput) {
         super(fields)
@@ -34,6 +36,7 @@ class AltoresRAGRetriever extends BaseRetriever {
         this.dataClass = fields.dataClass || 'synthetic'
         this.minScore = fields.minScore
         this.filter = fields.filter
+        this.retrievalMode = fields.retrievalMode
     }
 
     async _getRelevantDocuments(query: string): Promise<Document[]> {
@@ -46,6 +49,7 @@ class AltoresRAGRetriever extends BaseRetriever {
         }
         if (this.minScore !== undefined) body.min_score = this.minScore
         if (this.filter !== undefined) body.filter = this.filter
+        if (this.retrievalMode && this.retrievalMode !== 'dense') body.retrieval_mode = this.retrievalMode
 
         try {
             const response = await axios.post(url, body, {
@@ -158,6 +162,19 @@ class AltoresRAGRetriever_Retrievers implements INode {
                 description: 'JSON metadata filter forwarded to the RAG search',
                 optional: true,
                 additionalParams: true
+            },
+            {
+                label: 'Retrieval Mode',
+                name: 'retrievalMode',
+                type: 'options',
+                options: [
+                    { label: 'Dense (semantic)', name: 'dense' },
+                    { label: 'Hybrid (BM25 + dense)', name: 'hybrid' }
+                ],
+                default: 'dense',
+                optional: true,
+                additionalParams: true,
+                description: 'dense = vector only; hybrid = BM25 lexical + dense fused server-side (RRF)'
             }
         ]
     }
@@ -168,6 +185,7 @@ class AltoresRAGRetriever_Retrievers implements INode {
         const minScoreInput = nodeData.inputs?.minScore
         const dataClass = (nodeData.inputs?.dataClass as string) || 'synthetic'
         const filterStr = nodeData.inputs?.filter as string
+        const retrievalMode = nodeData.inputs?.retrievalMode as string
 
         const topK = topKInput !== undefined && topKInput !== '' ? Number(topKInput) : 5
         const parsedMinScore = minScoreInput !== undefined && minScoreInput !== '' ? parseFloat(minScoreInput as string) : undefined
@@ -188,7 +206,8 @@ class AltoresRAGRetriever_Retrievers implements INode {
             topK,
             dataClass,
             minScore,
-            filter
+            filter,
+            retrievalMode
         })
 
         return retriever
