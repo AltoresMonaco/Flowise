@@ -37,6 +37,10 @@ RUN pnpm install && \
 # Give the node user ownership of the application files
 RUN chown -R node:node .
 
+# Data directory (encryption key, local storage, logs) owned by the runtime user, so a fresh
+# named volume mounted there inherits that ownership.
+RUN mkdir -p /home/node/.flowise && chown node:node /home/node/.flowise
+
 # Switch to non-root user (node user already exists in node:20-alpine)
 USER node
 
