@@ -128,18 +128,37 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
         runs-on: ubuntu-latest
         environment: staging
+        permissions:
+            contents: read
+            packages: read
         steps:
             - name: Restart the stack on the new image
               env:
                   STAGING_HOST: ${{ secrets.STAGING_HOST }}
                   STAGING_SSH_USER: ${{ secrets.STAGING_SSH_USER }}
                   STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+                  GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              # The node pulls with this run's GITHUB_TOKEN, in a throwaway Docker config,
+              # instead of relying on a static credential left on the node (same pattern as
+              # support-portal's staging pipeline). The token travels on stdin, never as an
+              # argument, and is revoked when the job ends.
               run: |
                   install -m 700 -d ~/.ssh
                   printf '%s\n' "$STAGING_SSH_KEY" > ~/.ssh/deploy_key
                   chmod 600 ~/.ssh/deploy_key
-                  ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$STAGING_SSH_USER@$STAGING_HOST" \
-                    'cd /opt/apps/flowise-staging && docker compose -f docker-compose.staging.yml pull flowise-staging && docker compose -f docker-compose.staging.yml up -d'
+                  # The remote script reads the token from stdin, logs in to a temporary
+                  # DOCKER_CONFIG removed on exit, then pulls and restarts the stack.
+                  printf '%s\n' "$GHCR_TOKEN" | ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+                    "$STAGING_SSH_USER@$STAGING_HOST" "GHCR_USER=$GITHUB_ACTOR"'
+                    set -eu
+                    IFS= read -r token
+                    DOCKER_CONFIG="$(mktemp -d)"; export DOCKER_CONFIG
+                    trap "rm -rf \"$DOCKER_CONFIG\"" EXIT
+                    printf "%s" "$token" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null
+                    unset token
+                    cd /opt/apps/flowise-staging
+                    docker compose -f docker-compose.staging.yml pull flowise-staging
+                    docker compose -f docker-compose.staging.yml up -d'
                   rm -f ~/.ssh/deploy_key
             - name: Record the deployed digest
               run: echo "Deployed ${{ needs.image.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
