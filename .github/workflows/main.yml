@@ -48,6 +48,8 @@ jobs:
                   install: false
                   working-directory: packages/server
                   start: pnpm start
-                  wait-on: 'http://localhost:3000'
+                  # 127.0.0.1, not localhost: on Node 24 localhost tries ::1 and 127.0.0.1 together,
+                  # and the resulting connect error is not one the action retries.
+                  wait-on: 'http://127.0.0.1:3000'
                   wait-on-timeout: 120
                   browser: chrome
