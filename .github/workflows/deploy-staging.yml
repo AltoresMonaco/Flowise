@@ -131,14 +131,14 @@ jobs:
         steps:
             - name: Restart the stack on the new image
               env:
-                  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-                  DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
-                  DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+                  STAGING_HOST: ${{ secrets.STAGING_HOST }}
+                  STAGING_SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+                  STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
               run: |
                   install -m 700 -d ~/.ssh
-                  printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+                  printf '%s\n' "$STAGING_SSH_KEY" > ~/.ssh/deploy_key
                   chmod 600 ~/.ssh/deploy_key
-                  ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$DEPLOY_SSH_USER@$DEPLOY_HOST" \
+                  ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$STAGING_SSH_USER@$STAGING_HOST" \
                     'cd /opt/apps/flowise-staging && docker compose -f docker-compose.staging.yml pull flowise-staging && docker compose -f docker-compose.staging.yml up -d'
                   rm -f ~/.ssh/deploy_key
             - name: Record the deployed digest
