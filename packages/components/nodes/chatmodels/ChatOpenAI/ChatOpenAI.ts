@@ -21,7 +21,7 @@ class ChatOpenAI_ChatModels implements INode {
     constructor() {
         this.label = 'OpenAI'
         this.name = 'chatOpenAI'
-        this.version = 8.3
+        this.version = 8.4
         this.type = 'ChatOpenAI'
         this.icon = 'openai.svg'
         this.category = 'Chat Models'
@@ -74,7 +74,8 @@ class ChatOpenAI_ChatModels implements INode {
             },
             {
                 label: 'Reasoning',
-                description: 'Whether the model supports reasoning. Only applicable for reasoning models (gpt-5 and o-series models only)',
+                description:
+                    'Whether the model supports reasoning. Turn it on for any reasoning model; gpt-5 and o-series models are detected automatically',
                 name: 'reasoning',
                 type: 'boolean',
                 default: false,
@@ -83,10 +84,19 @@ class ChatOpenAI_ChatModels implements INode {
             },
             {
                 label: 'Reasoning Effort',
-                description: 'Constrains effort on reasoning. Only applicable for reasoning models (gpt-5 and o-series models only)',
+                description:
+                    'Constrains effort on reasoning. Any effort other than None switches the model to the Responses API, which supports reasoning together with function tools',
                 name: 'reasoningEffort',
                 type: 'options',
                 options: [
+                    {
+                        label: 'None',
+                        name: 'none'
+                    },
+                    {
+                        label: 'Minimal',
+                        name: 'minimal'
+                    },
                     {
                         label: 'Low',
                         name: 'low'
@@ -133,6 +143,16 @@ class ChatOpenAI_ChatModels implements INode {
                 show: {
                     reasoning: true
                 }
+            },
+            {
+                label: 'Use Responses API',
+                description:
+                    'Call the OpenAI Responses API instead of Chat Completions. Turned on automatically when reasoning is on with an effort other than None',
+                name: 'useResponsesApi',
+                type: 'boolean',
+                default: false,
+                optional: true,
+                additionalParams: true
             },
             {
                 label: 'Max Tokens',
@@ -234,6 +254,8 @@ class ChatOpenAI_ChatModels implements INode {
         const reasoningEffort = nodeData.inputs?.reasoningEffort as OpenAIClient.ReasoningEffort | null
         const reasoningSummary = nodeData.inputs?.reasoningSummary as 'auto' | 'concise' | 'detailed' | null
         const allowImageUploads = nodeData.inputs?.allowImageUploads as boolean
+        const reasoningEnabled = (nodeData.inputs?.reasoning as boolean) === true
+        const useResponsesApi = (nodeData.inputs?.useResponsesApi as boolean) === true
 
         if (nodeData.inputs?.credentialId) {
             nodeData.credential = nodeData.inputs?.credentialId
@@ -263,7 +285,8 @@ class ChatOpenAI_ChatModels implements INode {
         }
         if (strictToolCalling) obj.supportsStrictToolCalling = strictToolCalling
 
-        if (isReasoningModelOpenAI(modelName)) {
+        // Reasoning is opt-in per node so that new models work without a hard-coded name list.
+        if (reasoningEnabled || isReasoningModelOpenAI(modelName)) {
             delete obj.temperature
             delete obj.stop
             const reasoning: OpenAIClient.Reasoning = {}
@@ -274,7 +297,11 @@ class ChatOpenAI_ChatModels implements INode {
                 reasoning.summary = reasoningSummary
             }
             obj.reasoning = reasoning
+            // Chat Completions rejects function tools combined with a reasoning effort other than
+            // "none" (400 "Function tools with reasoning_effort are not supported"); the Responses API accepts both.
+            if (reasoningEnabled && reasoningEffort && reasoningEffort !== 'none') obj.useResponsesApi = true
         }
+        if (useResponsesApi) obj.useResponsesApi = true
 
         let parsedBaseOptions: any | undefined = undefined
 

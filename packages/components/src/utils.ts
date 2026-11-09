@@ -1320,7 +1320,11 @@ export const removeInvalidImageMarkdown = (output: string): string => {
  */
 export const extractOutputFromArray = (output: any): string => {
     if (Array.isArray(output)) {
-        return output.map((o) => o.text).join('\n')
+        // Responses API outputs mix text blocks with reasoning blocks that carry no text: keep the text only.
+        return output
+            .filter((o) => typeof o?.text === 'string')
+            .map((o) => o.text)
+            .join('\n')
     } else if (typeof output === 'object') {
         if (output.text) return output.text
         else return JSON.stringify(output)

@@ -339,6 +339,20 @@ export class ConsoleCallbackHandler extends BaseTracer {
 }
 
 /**
+ * Returns the reasoning text carried by a streamed chunk, if any.
+ * The OpenAI Responses API streams reasoning summaries as content blocks of type `reasoning`.
+ */
+export const extractReasoningDelta = (chunk: ChatGenerationChunk | undefined): string => {
+    const content = (chunk?.message as AIMessageChunk | undefined)?.content
+    if (!Array.isArray(content)) return ''
+    let text = ''
+    for (const block of content as any[]) {
+        if (block?.type === 'reasoning' && typeof block.reasoning === 'string') text += block.reasoning
+    }
+    return text
+}
+
+/**
  * Custom chain handler class
  */
 export class CustomChainHandler extends BaseCallbackHandler {
@@ -349,6 +363,7 @@ export class CustomChainHandler extends BaseCallbackHandler {
     cachedResponse = true
     chatId: string = ''
     sseStreamer: IServerSideEventStreamer | undefined
+    thinkingStartTime: number | null = null
 
     constructor(sseStreamer: IServerSideEventStreamer | undefined, chatId: string, skipK?: number, returnSourceDocuments?: boolean) {
         super()
@@ -372,6 +387,19 @@ export class CustomChainHandler extends BaseCallbackHandler {
         fields?: HandleLLMNewTokenCallbackFields
     ): void | Promise<void> {
         if (this.skipK === 0) {
+            const reasoning = extractReasoningDelta(fields?.chunk as ChatGenerationChunk | undefined)
+            if (reasoning) {
+                // Reasoning summaries (Responses API) arrive with an empty token: stream them as thinking events.
+                if (this.thinkingStartTime === null) this.thinkingStartTime = Date.now()
+                if (this.sseStreamer) this.sseStreamer.streamThinkingEvent(this.chatId, reasoning)
+                return
+            }
+            if (token && this.thinkingStartTime !== null) {
+                // First answer token after reasoning: close the thinking block with its duration.
+                const duration = Math.round((Date.now() - this.thinkingStartTime) / 1000)
+                this.thinkingStartTime = null
+                if (this.sseStreamer) this.sseStreamer.streamThinkingEvent(this.chatId, '', duration)
+            }
             if (!this.isLLMStarted) {
                 this.isLLMStarted = true
                 if (this.sseStreamer) {
