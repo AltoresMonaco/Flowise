@@ -1,6 +1,6 @@
 import { BaseLanguageModel } from '@langchain/core/language_models/base'
 import { VectorStore } from '@langchain/core/vectorstores'
-import { VectorDBQAChain } from 'langchain/chains'
+import { VectorDBQAChain } from '@langchain/classic/chains'
 import { ConsoleCallbackHandler, CustomChainHandler, additionalCallbacks } from '../../../src/handler'
 import { ICommonObject, INode, INodeData, INodeParams, IServerSideEventStreamer } from '../../../src/Interface'
 import { getBaseClasses } from '../../../src/utils'
@@ -17,6 +17,7 @@ class VectorDBQAChain_Chains implements INode {
     baseClasses: string[]
     description: string
     inputs: INodeParams[]
+    badge: string
 
     constructor() {
         this.label = 'VectorDB QA Chain'
@@ -25,6 +26,7 @@ class VectorDBQAChain_Chains implements INode {
         this.type = 'VectorDBQAChain'
         this.icon = 'vectordb.svg'
         this.category = 'Chains'
+        this.badge = 'DEPRECATING'
         this.description = 'QA chain for vector databases'
         this.baseClasses = [this.type, ...getBaseClasses(VectorDBQAChain)]
         this.inputs = [
@@ -55,7 +57,7 @@ class VectorDBQAChain_Chains implements INode {
 
         const chain = VectorDBQAChain.fromLLM(model, vectorStore, {
             k: (vectorStore as any)?.k ?? 4,
-            verbose: process.env.DEBUG === 'true'
+            verbose: process.env.DEBUG === 'true' ? true : false
         })
         return chain
     }
@@ -84,7 +86,7 @@ class VectorDBQAChain_Chains implements INode {
             query: input
         }
 
-        const loggerHandler = new ConsoleCallbackHandler(options.logger)
+        const loggerHandler = new ConsoleCallbackHandler(options.logger, options?.orgId)
         const callbacks = await additionalCallbacks(nodeData, options)
 
         if (shouldStreamResponse) {

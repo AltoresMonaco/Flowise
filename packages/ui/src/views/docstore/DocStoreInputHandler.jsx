@@ -1,10 +1,10 @@
 import PropTypes from 'prop-types'
-import { useState } from 'react'
+import { useState, useContext } from 'react'
 import { useSelector } from 'react-redux'
 
 // material-ui
 import { Box, Typography, IconButton, Button } from '@mui/material'
-import { IconRefresh, IconArrowsMaximize, IconAlertTriangle } from '@tabler/icons-react'
+import { IconArrowsMaximize, IconAlertTriangle, IconRefresh } from '@tabler/icons-react'
 
 // project import
 import { Dropdown } from '@/ui-component/dropdown/Dropdown'
@@ -17,23 +17,34 @@ import { SwitchInput } from '@/ui-component/switch/Switch'
 import { JsonEditorInput } from '@/ui-component/json/JsonEditor'
 import { TooltipWithParser } from '@/ui-component/tooltip/TooltipWithParser'
 import { CodeEditor } from '@/ui-component/editor/CodeEditor'
+import { ArrayRenderer } from '@/ui-component/array/ArrayRenderer'
 import ExpandTextDialog from '@/ui-component/dialog/ExpandTextDialog'
 import ManageScrapedLinksDialog from '@/ui-component/dialog/ManageScrapedLinksDialog'
 import CredentialInputHandler from '@/views/canvas/CredentialInputHandler'
+import { flowContext } from '@/store/context/ReactFlowContext'
 
 // const
 import { FLOWISE_CREDENTIAL_ID } from '@/store/constant'
 
 // ===========================|| DocStoreInputHandler ||=========================== //
 
-const DocStoreInputHandler = ({ inputParam, data, disabled = false }) => {
+const DocStoreInputHandler = ({ inputParam, data, disabled = false, onNodeDataChange }) => {
     const customization = useSelector((state) => state.customization)
+    const flowContextValue = useContext(flowContext)
+    const nodeDataChangeHandler = onNodeDataChange || flowContextValue?.onNodeDataChange
 
     const [showExpandDialog, setShowExpandDialog] = useState(false)
     const [expandDialogProps, setExpandDialogProps] = useState({})
     const [showManageScrapedLinksDialog, setShowManageScrapedLinksDialog] = useState(false)
     const [manageScrapedLinksDialogProps, setManageScrapedLinksDialogProps] = useState({})
     const [reloadTimestamp, setReloadTimestamp] = useState(Date.now().toString())
+
+    const handleDataChange = ({ inputParam, newValue }) => {
+        data.inputs[inputParam.name] = newValue
+        if (nodeDataChangeHandler) {
+            nodeDataChangeHandler({ nodeId: data.id, inputParam, newValue })
+        }
+    }
 
     const onExpandDialogClicked = (value, inputParam) => {
         const dialogProps = {
@@ -134,6 +145,9 @@ const DocStoreInputHandler = ({ inputParam, data, disabled = false }) => {
                                 onSelect={(newValue) => {
                                     data.credential = newValue
                                     data.inputs[FLOWISE_CREDENTIAL_ID] = newValue // in case data.credential is not updated
+                                    if (nodeDataChangeHandler) {
+                                        nodeDataChangeHandler({ nodeId: data.id, inputParam, newValue })
+                                    }
                                 }}
                             />
                         )}
@@ -142,14 +156,14 @@ const DocStoreInputHandler = ({ inputParam, data, disabled = false }) => {
                             <File
                                 disabled={disabled}
                                 fileType={inputParam.fileType || '*'}
-                                onChange={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                onChange={(newValue) => handleDataChange({ inputParam, newValue })}
                                 value={data.inputs[inputParam.name] ?? inputParam.default ?? 'Choose a file to upload'}
                             />
                         )}
                         {inputParam.type === 'boolean' && (
                             <SwitchInput
                                 disabled={disabled}
-                                onChange={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                onChange={(newValue) => handleDataChange({ inputParam, newValue })}
                                 value={data.inputs[inputParam.name] ?? inputParam.default ?? false}
                             />
                         )}
@@ -159,7 +173,7 @@ const DocStoreInputHandler = ({ inputParam, data, disabled = false }) => {
                                 columns={inputParam.datagrid}
                                 hideFooter={true}
                                 rows={data.inputs[inputParam.name] ?? JSON.stringify(inputParam.default) ?? []}
-                                onChange={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                onChange={(newValue) => handleDataChange({ inputParam, newValue })}
                             />
                         )}
                         {inputParam.type === 'code' && (
@@ -185,6 +199,7 @@ const DocStoreInputHandler = ({ inputParam, data, disabled = false }) => {
                                 disabled={disabled}
                                 inputParam={inputParam}
                                 onChange={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                onBlur={(newValue) => handleDataChange({ inputParam, newValue })}
                                 value={data.inputs[inputParam.name] ?? inputParam.default ?? ''}
                                 nodeId={data.id}
                             />
@@ -203,7 +218,7 @@ const DocStoreInputHandler = ({ inputParam, data, disabled = false }) => {
                                 disabled={disabled}
                                 name={inputParam.name}
                                 options={inputParam.options}
-                                onSelect={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                onSelect={(newValue) => handleDataChange({ inputParam, newValue })}
                                 value={data.inputs[inputParam.name] ?? inputParam.default ?? 'choose an option'}
                             />
                         )}
@@ -213,7 +228,7 @@ const DocStoreInputHandler = ({ inputParam, data, disabled = false }) => {
                                 disabled={disabled}
                                 name={inputParam.name}
                                 options={inputParam.options}
-                                onSelect={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                onSelect={(newValue) => handleDataChange({ inputParam, newValue })}
                                 value={data.inputs[inputParam.name] ?? inputParam.default ?? 'choose an option'}
                             />
                         )}
@@ -230,8 +245,9 @@ const DocStoreInputHandler = ({ inputParam, data, disabled = false }) => {
                                             freeSolo={inputParam.freeSolo}
                                             multiple={inputParam.type === 'asyncMultiOptions'}
                                             value={data.inputs[inputParam.name] ?? inputParam.default ?? 'choose an option'}
-                                            onSelect={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                            onSelect={(newValue) => handleDataChange({ inputParam, newValue })}
                                             onCreateNew={() => addAsyncOption(inputParam.name)}
+                                            fullWidth={true}
                                         />
                                     </div>
                                     {inputParam.refresh && (
@@ -246,6 +262,9 @@ const DocStoreInputHandler = ({ inputParam, data, disabled = false }) => {
                                     )}
                                 </div>
                             </>
+                        )}
+                        {inputParam.type === 'array' && (
+                            <ArrayRenderer inputParam={inputParam} data={data} disabled={disabled} isDocStore={true} />
                         )}
                         {(data.name === 'cheerioWebScraper' ||
                             data.name === 'puppeteerWebScraper' ||
@@ -296,7 +315,8 @@ const DocStoreInputHandler = ({ inputParam, data, disabled = false }) => {
 DocStoreInputHandler.propTypes = {
     inputParam: PropTypes.object,
     data: PropTypes.object,
-    disabled: PropTypes.bool
+    disabled: PropTypes.bool,
+    onNodeDataChange: PropTypes.func
 }
 
 export default DocStoreInputHandler

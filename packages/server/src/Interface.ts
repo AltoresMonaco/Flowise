@@ -2,20 +2,25 @@ import {
     IAction,
     ICommonObject,
     IFileUpload,
+    IHumanInput,
     INode,
     INodeData as INodeDataFromComponent,
+    INodeExecutionData,
     INodeParams,
     IServerSideEventStreamer
 } from 'flowise-components'
 import { DataSource } from 'typeorm'
 import { CachePool } from './CachePool'
 import { Telemetry } from './utils/telemetry'
+import { UsageCacheManager } from './UsageCacheManager'
 
 export type MessageType = 'apiMessage' | 'userMessage'
 
-export type ChatflowType = 'CHATFLOW' | 'MULTIAGENT' | 'ASSISTANT'
+export type ChatflowType = 'CHATFLOW' | 'MULTIAGENT' | 'ASSISTANT' | 'AGENTFLOW'
 
 export type AssistantType = 'CUSTOM' | 'OPENAI' | 'AZURE'
+
+export type ExecutionState = 'INPROGRESS' | 'FINISHED' | 'ERROR' | 'TERMINATED' | 'TIMEOUT' | 'STOPPED'
 
 export enum MODE {
     QUEUE = 'queue',
@@ -24,13 +29,30 @@ export enum MODE {
 
 export enum ChatType {
     INTERNAL = 'INTERNAL',
-    EXTERNAL = 'EXTERNAL'
+    EXTERNAL = 'EXTERNAL',
+    EVALUATION = 'EVALUATION',
+    MCP = 'MCP',
+    SCHEDULED = 'SCHEDULED',
+    WEBHOOK = 'WEBHOOK'
 }
 
 export enum ChatMessageRatingType {
     THUMBS_UP = 'THUMBS_UP',
     THUMBS_DOWN = 'THUMBS_DOWN'
 }
+
+export enum Platform {
+    OPEN_SOURCE = 'open source',
+    CLOUD = 'cloud',
+    ENTERPRISE = 'enterprise'
+}
+
+export enum UserPlan {
+    STARTER = 'STARTER',
+    PRO = 'PRO',
+    FREE = 'FREE'
+}
+
 /**
  * Databases
  */
@@ -45,11 +67,16 @@ export interface IChatFlow {
     apikeyid?: string
     analytic?: string
     speechToText?: string
+    textToSpeech?: string
     chatbotConfig?: string
     followUpPrompts?: string
     apiConfig?: string
     category?: string
     type?: ChatflowType
+    mcpServerConfig?: string
+    workspaceId: string
+    webhookSecret?: string | null
+    webhookSecretConfigured?: boolean
 }
 
 export interface IChatMessage {
@@ -57,10 +84,12 @@ export interface IChatMessage {
     role: MessageType
     content: string
     chatflowid: string
+    executionId?: string
     sourceDocuments?: string
     usedTools?: string
     fileAnnotations?: string
     agentReasoning?: string
+    reasonContent?: string
     fileUploads?: string
     artifacts?: string
     chatType: string
@@ -93,6 +122,7 @@ export interface ITool {
     func?: string
     updatedDate: Date
     createdDate: Date
+    workspaceId: string
 }
 
 export interface IAssistant {
@@ -102,6 +132,7 @@ export interface IAssistant {
     iconSrc?: string
     updatedDate: Date
     createdDate: Date
+    workspaceId: string
 }
 
 export interface ICredential {
@@ -111,6 +142,7 @@ export interface ICredential {
     encryptedData: string
     updatedDate: Date
     createdDate: Date
+    workspaceId: string
 }
 
 export interface IVariable {
@@ -120,6 +152,7 @@ export interface IVariable {
     type: string
     updatedDate: Date
     createdDate: Date
+    workspaceId: string
 }
 
 export interface ILead {
@@ -138,6 +171,88 @@ export interface IUpsertHistory {
     result: string
     flowData: string
     date: Date
+}
+
+export interface IExecution {
+    id: string
+    executionData: string
+    state: ExecutionState
+    agentflowId: string
+    sessionId: string
+    isPublic?: boolean
+    action?: string
+    createdDate: Date
+    updatedDate: Date
+    stoppedDate: Date
+    workspaceId: string
+}
+
+export type ScheduleInputMode = 'text' | 'form' | 'none'
+
+export type StartInputType = 'chatInput' | 'formInput' | 'webhookTrigger' | 'scheduleInput'
+
+export interface IScheduleRecord {
+    id: string
+    triggerType: string
+    targetId: string
+    nodeId?: string
+    cronExpression: string
+    timezone: string
+    enabled: boolean
+    scheduleInputMode: ScheduleInputMode
+    defaultInput?: string
+    defaultForm?: string
+    lastRunAt?: Date
+    nextRunAt?: Date
+    endDate?: Date
+    workspaceId: string
+    createdDate: Date
+    updatedDate: Date
+}
+
+export interface IScheduleTriggerLog {
+    id: string
+    scheduleRecordId: string
+    triggerType: string
+    targetId: string
+    executionId?: string
+    status: string
+    error?: string
+    elapsedTimeMs?: number
+    scheduledAt: Date
+    workspaceId: string
+    createdDate: Date
+}
+
+export enum CustomMcpServerStatus {
+    PENDING = 'PENDING',
+    AUTHORIZED = 'AUTHORIZED',
+    ERROR = 'ERROR'
+}
+
+export enum CustomMcpServerAuthType {
+    NONE = 'NONE',
+    CUSTOM_HEADERS = 'CUSTOM_HEADERS'
+}
+
+export interface ICustomMcpServer {
+    id: string
+    name: string
+    serverUrl: string
+    iconSrc?: string
+    color?: string
+    authType: string
+    authConfig?: string
+    tools?: string
+    toolCount: number
+    status: CustomMcpServerStatus | string
+    createdDate: Date
+    updatedDate: Date
+    workspaceId: string
+}
+
+export interface ICustomMcpServerResponse extends Omit<ICustomMcpServer, 'authConfig'> {
+    authConfig?: Record<string, any>
 }
 
 export interface IComponentNodes {
@@ -187,6 +302,8 @@ export interface IReactFlowNode {
     height: number
     selected: boolean
     dragging: boolean
+    parentNode?: string
+    extent?: string
 }
 
 export interface IReactFlowEdge {
@@ -227,6 +344,14 @@ export interface IDepthQueue {
     [key: string]: number
 }
 
+export interface IAgentflowExecutedData {
+    nodeLabel: string
+    nodeId: string
+    data: INodeExecutionData
+    previousNodeIds: string[]
+    status?: ExecutionState
+}
+
 export interface IMessage {
     message: string
     type: MessageType
@@ -238,12 +363,20 @@ export interface IncomingInput {
     question: string
     overrideConfig?: ICommonObject
     chatId?: string
+    sessionId?: string
     stopNodeId?: string
     uploads?: IFileUpload[]
     leadEmail?: string
     history?: IMessage[]
     action?: IAction
     streaming?: boolean
+}
+
+export interface IncomingAgentflowInput extends Omit<IncomingInput, 'question'> {
+    question?: string
+    form?: Record<string, any>
+    humanInput?: IHumanInput
+    webhook?: Record<string, any>
 }
 
 export interface IActiveChatflows {
@@ -266,6 +399,7 @@ export interface IOverrideConfig {
     label: string
     name: string
     type: string
+    schema?: ICommonObject[] | Record<string, string>
 }
 
 export type ICredentialDataDecrypted = ICommonObject
@@ -275,6 +409,7 @@ export interface ICredentialReqBody {
     name: string
     credentialName: string
     plainDataObj: ICredentialDataDecrypted
+    workspaceId: string
 }
 
 // Decrypted credential object sent back to client
@@ -285,14 +420,6 @@ export interface ICredentialReturnResponse extends ICredential {
 export interface IUploadFileSizeAndTypes {
     fileTypes: string[]
     maxUploadSize: number
-}
-
-export interface IApiKey {
-    id: string
-    keyName: string
-    apiKey: string
-    apiSecret: string
-    updatedDate: Date
 }
 
 export interface ICustomTemplate {
@@ -306,15 +433,19 @@ export interface ICustomTemplate {
     badge?: string
     framework?: string
     usecases?: string
+    workspaceId: string
 }
 
 export interface IFlowConfig {
     chatflowid: string
+    chatflowId: string
     chatId: string
     sessionId: string
     chatHistory: IMessage[]
     apiMessageId: string
     overrideConfig?: ICommonObject
+    state?: ICommonObject
+    runtimeChatHistoryLength?: number
 }
 
 export interface IPredictionQueueAppServer {
@@ -323,17 +454,31 @@ export interface IPredictionQueueAppServer {
     sseStreamer: IServerSideEventStreamer
     telemetry: Telemetry
     cachePool: CachePool
+    usageCacheManager: UsageCacheManager
 }
 
 export interface IExecuteFlowParams extends IPredictionQueueAppServer {
     incomingInput: IncomingInput
     chatflow: IChatFlow
     chatId: string
+    orgId: string
+    workspaceId: string
+    subscriptionId: string
+    productId: string
     baseURL: string
     isInternal: boolean
+    isEvaluation?: boolean
+    evaluationRunId?: string
     signal?: AbortController
     files?: Express.Multer.File[]
+    fileUploads?: IFileUpload[]
+    uploadedFilesContent?: string
     isUpsert?: boolean
+    isRecursive?: boolean
+    parentExecutionId?: string
+    iterationContext?: ICommonObject
+    isTool?: boolean
+    chatType?: ChatType
 }
 
 export interface INodeOverrides {
@@ -352,5 +497,15 @@ export interface IVariableOverride {
     enabled: boolean
 }
 
+export interface IMcpServerConfig {
+    enabled: boolean
+    token: string
+    description?: string
+    toolName?: string
+}
+
 // DocumentStore related
 export * from './Interface.DocumentStore'
+
+// Evaluations related
+export * from './Interface.Evaluation'

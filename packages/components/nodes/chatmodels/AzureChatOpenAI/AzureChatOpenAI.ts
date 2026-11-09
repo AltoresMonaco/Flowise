@@ -1,9 +1,10 @@
-import { AzureOpenAIInput, AzureChatOpenAI as LangchainAzureChatOpenAI, ChatOpenAIFields, OpenAIClient } from '@langchain/openai'
+import { AzureOpenAIInput, AzureChatOpenAI as LangchainAzureChatOpenAI, ChatOpenAIFields } from '@langchain/openai'
 import { BaseCache } from '@langchain/core/caches'
 import { ICommonObject, IMultiModalOption, INode, INodeData, INodeOptionsValue, INodeParams } from '../../../src/Interface'
-import { getBaseClasses, getCredentialData, getCredentialParam } from '../../../src/utils'
+import { getBaseClasses, getCredentialData, getCredentialParam, isReasoningModelOpenAI } from '../../../src/utils'
 import { getModels, MODEL_TYPE } from '../../../src/modelLoader'
 import { AzureChatOpenAI } from './FlowiseAzureChatOpenAI'
+import { OpenAI as OpenAIClient } from 'openai'
 
 const serverCredentialsExists =
     !!process.env.AZURE_OPENAI_API_KEY &&
@@ -24,9 +25,9 @@ class AzureChatOpenAI_ChatModels implements INode {
     inputs: INodeParams[]
 
     constructor() {
-        this.label = 'Azure ChatOpenAI'
+        this.label = 'Azure OpenAI'
         this.name = 'azureChatOpenAI'
-        this.version = 7.0
+        this.version = 7.1
         this.type = 'AzureChatOpenAI'
         this.icon = 'Azure.svg'
         this.category = 'Chat Models'
@@ -50,7 +51,8 @@ class AzureChatOpenAI_ChatModels implements INode {
                 label: 'Model Name',
                 name: 'modelName',
                 type: 'asyncOptions',
-                loadMethod: 'listModels'
+                loadMethod: 'listModels',
+                freeSolo: true
             },
             {
                 label: 'Temperature',
@@ -75,6 +77,72 @@ class AzureChatOpenAI_ChatModels implements INode {
                 default: true,
                 optional: true,
                 additionalParams: true
+            },
+            {
+                label: 'Allow Image Uploads',
+                name: 'allowImageUploads',
+                type: 'boolean',
+                description:
+                    'Allow image input. Refer to the <a href="https://docs.flowiseai.com/using-flowise/uploads#image" target="_blank">docs</a> for more details.',
+                default: false,
+                optional: true
+            },
+            {
+                label: 'Reasoning',
+                description: 'Whether the model supports reasoning. Only applicable for reasoning models (gpt-5 and o-series models only)',
+                name: 'reasoning',
+                type: 'boolean',
+                default: false,
+                optional: true,
+                additionalParams: true
+            },
+            {
+                label: 'Reasoning Effort',
+                description: 'Constrains effort on reasoning. Only applicable for reasoning models (gpt-5 and o-series models only)',
+                name: 'reasoningEffort',
+                type: 'options',
+                options: [
+                    {
+                        label: 'Low',
+                        name: 'low'
+                    },
+                    {
+                        label: 'Medium',
+                        name: 'medium'
+                    },
+                    {
+                        label: 'High',
+                        name: 'high'
+                    }
+                ],
+                additionalParams: true,
+                show: {
+                    reasoning: true
+                }
+            },
+            {
+                label: 'Reasoning Summary',
+                description: `A summary of the reasoning performed by the model. This can be useful for debugging and understanding the model's reasoning process`,
+                name: 'reasoningSummary',
+                type: 'options',
+                options: [
+                    {
+                        label: 'Auto',
+                        name: 'auto'
+                    },
+                    {
+                        label: 'Concise',
+                        name: 'concise'
+                    },
+                    {
+                        label: 'Detailed',
+                        name: 'detailed'
+                    }
+                ],
+                additionalParams: true,
+                show: {
+                    reasoning: true
+                }
             },
             {
                 label: 'Top Probability',
@@ -109,72 +177,19 @@ class AzureChatOpenAI_ChatModels implements INode {
                 additionalParams: true
             },
             {
-                label: 'BasePath',
+                label: 'Base Path',
                 name: 'basepath',
                 type: 'string',
                 optional: true,
+                description: 'Override the default base URL for the API, e.g., "https://api.example.com/v2/',
                 additionalParams: true
             },
             {
-                label: 'BaseOptions',
+                label: 'Base Options',
                 name: 'baseOptions',
                 type: 'json',
                 optional: true,
-                additionalParams: true
-            },
-            {
-                label: 'Allow Image Uploads',
-                name: 'allowImageUploads',
-                type: 'boolean',
-                description:
-                    'Allow image input. Refer to the <a href="https://docs.flowiseai.com/using-flowise/uploads#image" target="_blank">docs</a> for more details.',
-                default: false,
-                optional: true
-            },
-            {
-                label: 'Image Resolution',
-                description: 'This parameter controls the resolution in which the model views the image.',
-                name: 'imageResolution',
-                type: 'options',
-                options: [
-                    {
-                        label: 'Low',
-                        name: 'low'
-                    },
-                    {
-                        label: 'High',
-                        name: 'high'
-                    },
-                    {
-                        label: 'Auto',
-                        name: 'auto'
-                    }
-                ],
-                default: 'low',
-                optional: false,
-                additionalParams: true
-            },
-            {
-                label: 'Reasoning Effort',
-                description: 'Constrains effort on reasoning for reasoning models. Only applicable for o1 and o3 models.',
-                name: 'reasoningEffort',
-                type: 'options',
-                options: [
-                    {
-                        label: 'Low',
-                        name: 'low'
-                    },
-                    {
-                        label: 'Medium',
-                        name: 'medium'
-                    },
-                    {
-                        label: 'High',
-                        name: 'high'
-                    }
-                ],
-                default: 'medium',
-                optional: false,
+                description: 'Default headers to include with every request to the API.',
                 additionalParams: true
             }
         ]
@@ -199,7 +214,8 @@ class AzureChatOpenAI_ChatModels implements INode {
         const topP = nodeData.inputs?.topP as string
         const basePath = nodeData.inputs?.basepath as string
         const baseOptions = nodeData.inputs?.baseOptions
-        const reasoningEffort = nodeData.inputs?.reasoningEffort as OpenAIClient.Chat.ChatCompletionReasoningEffort
+        const reasoningEffort = nodeData.inputs?.reasoningEffort as OpenAIClient.Chat.ChatCompletionReasoningEffort | null
+        const reasoningSummary = nodeData.inputs?.reasoningSummary as 'auto' | 'concise' | 'detailed' | null
 
         const credentialData = await getCredentialData(nodeData.credential ?? '', options)
         const azureOpenAIApiKey = getCredentialParam('azureOpenAIApiKey', credentialData, nodeData)
@@ -208,7 +224,6 @@ class AzureChatOpenAI_ChatModels implements INode {
         const azureOpenAIApiVersion = getCredentialParam('azureOpenAIApiVersion', credentialData, nodeData)
 
         const allowImageUploads = nodeData.inputs?.allowImageUploads as boolean
-        const imageResolution = nodeData.inputs?.imageResolution as string
 
         const obj: ChatOpenAIFields & Partial<AzureOpenAIInput> = {
             temperature: parseFloat(temperature),
@@ -220,7 +235,7 @@ class AzureChatOpenAI_ChatModels implements INode {
             streaming: streaming ?? true
         }
 
-        if (maxTokens) obj.maxTokens = parseInt(maxTokens, 10)
+        if (maxTokens) obj.maxCompletionTokens = parseInt(maxTokens, 10)
         if (frequencyPenalty) obj.frequencyPenalty = parseFloat(frequencyPenalty)
         if (presencePenalty) obj.presencePenalty = parseFloat(presencePenalty)
         if (timeout) obj.timeout = parseInt(timeout, 10)
@@ -237,17 +252,22 @@ class AzureChatOpenAI_ChatModels implements INode {
                 console.error('Error parsing base options', exception)
             }
         }
-        if (modelName === 'o3-mini') {
+        if (isReasoningModelOpenAI(modelName)) {
             delete obj.temperature
-        }
-        if ((modelName.includes('o1') || modelName.includes('o3')) && reasoningEffort) {
-            obj.reasoningEffort = reasoningEffort
+            delete obj.stop
+            const reasoning: OpenAIClient.Reasoning = {}
+            if (reasoningEffort) {
+                reasoning.effort = reasoningEffort
+            }
+            if (reasoningSummary) {
+                reasoning.summary = reasoningSummary
+            }
+            obj.reasoning = reasoning
         }
 
         const multiModalOption: IMultiModalOption = {
             image: {
-                allowImageUploads: allowImageUploads ?? false,
-                imageResolution
+                allowImageUploads: allowImageUploads ?? false
             }
         }
 

@@ -2,6 +2,7 @@ import PropTypes from 'prop-types'
 import { Box, Button, FormControl, ListItem, ListItemAvatar, ListItemText, MenuItem, Select, Typography } from '@mui/material'
 import { useEffect, useState } from 'react'
 import { useDispatch } from 'react-redux'
+import { useTheme } from '@mui/material/styles'
 
 // Project Imports
 import { StyledButton } from '@/ui-component/button/StyledButton'
@@ -14,6 +15,7 @@ import azureOpenAiIcon from '@/assets/images/azure_openai.svg'
 import mistralAiIcon from '@/assets/images/mistralai.svg'
 import openAiIcon from '@/assets/images/openai.svg'
 import groqIcon from '@/assets/images/groq.png'
+import geminiIcon from '@/assets/images/gemini.png'
 import ollamaIcon from '@/assets/images/ollama.svg'
 import { TooltipWithParser } from '@/ui-component/tooltip/TooltipWithParser'
 import CredentialInputHandler from '@/views/canvas/CredentialInputHandler'
@@ -116,7 +118,7 @@ const followUpPromptsOptions = {
     [FollowUpPromptProviders.GOOGLE_GENAI]: {
         label: 'Google Gemini',
         name: FollowUpPromptProviders.GOOGLE_GENAI,
-        icon: azureOpenAiIcon,
+        icon: geminiIcon,
         inputs: [
             {
                 label: 'Connect Credential',
@@ -127,12 +129,8 @@ const followUpPromptsOptions = {
             {
                 label: 'Model Name',
                 name: 'modelName',
-                type: 'options',
-                default: 'gemini-1.5-pro-latest',
-                options: [
-                    { label: 'gemini-1.5-flash-latest', name: 'gemini-1.5-flash-latest' },
-                    { label: 'gemini-1.5-pro-latest', name: 'gemini-1.5-pro-latest' }
-                ]
+                type: 'asyncOptions',
+                loadMethod: 'listModels'
             },
             {
                 label: 'Prompt',
@@ -203,11 +201,8 @@ const followUpPromptsOptions = {
             {
                 label: 'Model Name',
                 name: 'modelName',
-                type: 'options',
-                options: [
-                    { label: 'mistral-large-latest', name: 'mistral-large-latest' },
-                    { label: 'mistral-large-2402', name: 'mistral-large-2402' }
-                ]
+                type: 'asyncOptions',
+                loadMethod: 'listModels'
             },
             {
                 label: 'Prompt',
@@ -310,6 +305,7 @@ const FollowUpPrompts = ({ dialogProps }) => {
     const dispatch = useDispatch()
 
     useNotifier()
+    const theme = useTheme()
 
     const enqueueSnackbar = (...args) => dispatch(enqueueSnackbarAction(...args))
     const closeSnackbar = (...args) => dispatch(closeSnackbarAction(...args))
@@ -416,13 +412,25 @@ const FollowUpPrompts = ({ dialogProps }) => {
     }
 
     useEffect(() => {
-        if (dialogProps.chatflow && dialogProps.chatflow.followUpPrompts) {
-            let chatbotConfig = JSON.parse(dialogProps.chatflow.chatbotConfig)
-            let followUpPromptsConfig = JSON.parse(dialogProps.chatflow.followUpPrompts)
-            setChatbotConfig(chatbotConfig || {})
-            if (followUpPromptsConfig) {
-                setFollowUpPromptsConfig(followUpPromptsConfig)
-                setSelectedProvider(followUpPromptsConfig.selectedProvider)
+        if (!dialogProps.chatflow) return
+        // Load chatbotConfig unconditionally — otherwise saving follow-up prompts
+        // writes an empty object and wipes starterPrompts/leads/allowedOrigins/etc.
+        if (dialogProps.chatflow.chatbotConfig) {
+            try {
+                setChatbotConfig(JSON.parse(dialogProps.chatflow.chatbotConfig) || {})
+            } catch {
+                setChatbotConfig({})
+            }
+        }
+        if (dialogProps.chatflow.followUpPrompts) {
+            try {
+                const followUpPromptsConfig = JSON.parse(dialogProps.chatflow.followUpPrompts)
+                if (followUpPromptsConfig) {
+                    setFollowUpPromptsConfig(followUpPromptsConfig)
+                    setSelectedProvider(followUpPromptsConfig.selectedProvider)
+                }
+            } catch {
+                // ignore malformed stored config
             }
         }
 
@@ -473,7 +481,16 @@ const FollowUpPrompts = ({ dialogProps }) => {
                     <>
                         <Typography variant='h5'>Providers</Typography>
                         <FormControl fullWidth>
-                            <Select size='small' value={selectedProvider} onChange={handleSelectedProviderChange}>
+                            <Select
+                                size='small'
+                                value={selectedProvider}
+                                onChange={handleSelectedProviderChange}
+                                sx={{
+                                    '& .MuiSvgIcon-root': {
+                                        color: theme?.customization?.isDarkMode ? '#fff' : 'inherit'
+                                    }
+                                }}
+                            >
                                 {Object.values(followUpPromptsOptions).map((provider) => (
                                     <MenuItem key={provider.name} value={provider.name}>
                                         {provider.label}
@@ -596,9 +613,11 @@ const FollowUpPrompts = ({ dialogProps }) => {
                     </>
                 )}
             </Box>
-            <StyledButton disabled={checkDisabled()} variant='contained' onClick={onSave}>
-                Save
-            </StyledButton>
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', width: '100%', mt: 2 }}>
+                <StyledButton disabled={checkDisabled()} variant='contained' onClick={onSave} sx={{ minWidth: 100 }}>
+                    Save
+                </StyledButton>
+            </Box>
         </>
     )
 }

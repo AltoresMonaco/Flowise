@@ -1,38 +1,43 @@
 import { Request } from 'express'
-import * as path from 'path'
-import { cloneDeep, omit } from 'lodash'
 import {
-    IMessage,
     addArrayFilesToStorage,
-    mapMimeTypeToInputField,
-    mapExtToInputField,
     getFileFromUpload,
+    IMessage,
+    mapExtToInputField,
+    mapMimeTypeToInputField,
     removeSpecificFileFromUpload
 } from 'flowise-components'
-import logger from '../utils/logger'
+import { StatusCodes } from 'http-status-codes'
+import { cloneDeep, omit } from 'lodash'
+import * as path from 'path'
+import { v4 as uuidv4 } from 'uuid'
+import { ChatType, IExecuteFlowParams, IncomingInput, INodeDirectedGraph, IReactFlowObject, MODE } from '../Interface'
+import { FLOWISE_COUNTER_STATUS, FLOWISE_METRIC_COUNTERS } from '../Interface.Metrics'
+import { ChatFlow } from '../database/entities/ChatFlow'
+import { UpsertHistory } from '../database/entities/UpsertHistory'
+import { Variable } from '../database/entities/Variable'
+import { Organization } from '../enterprise/database/entities/organization.entity'
+import { Workspace } from '../enterprise/database/entities/workspace.entity'
+import { getWorkspaceSearchOptions } from '../enterprise/utils/ControllerServiceUtils'
+import { InternalFlowiseError } from '../errors/internalFlowiseError'
+import { getErrorMessage } from '../errors/utils'
 import {
     buildFlow,
     constructGraphs,
-    getAllConnectedNodes,
     findMemoryNode,
-    getMemorySessionId,
+    getAllConnectedNodes,
+    getAPIOverrideConfig,
     getAppVersion,
-    getTelemetryFlowObj,
+    getMemorySessionId,
     getStartingNodes,
-    getAPIOverrideConfig
+    getTelemetryFlowObj
 } from '../utils'
-import { validateChatflowAPIKey } from './validateKey'
-import { IncomingInput, INodeDirectedGraph, IReactFlowObject, ChatType, IExecuteFlowParams, MODE } from '../Interface'
-import { ChatFlow } from '../database/entities/ChatFlow'
 import { getRunningExpressApp } from '../utils/getRunningExpressApp'
-import { UpsertHistory } from '../database/entities/UpsertHistory'
-import { InternalFlowiseError } from '../errors/internalFlowiseError'
-import { StatusCodes } from 'http-status-codes'
-import { getErrorMessage } from '../errors/utils'
-import { v4 as uuidv4 } from 'uuid'
-import { FLOWISE_COUNTER_STATUS, FLOWISE_METRIC_COUNTERS } from '../Interface.Metrics'
-import { Variable } from '../database/entities/Variable'
+import logger from '../utils/logger'
 import { OMIT_QUEUE_JOB_DATA } from './constants'
+import { validateFileMimeTypeAndExtensionMatch } from './fileValidation'
+import { checkStorage, updateStorageUsage } from './quotaUsage'
+import { validateFlowAPIKey } from './validateKey'
 
 export const executeUpsert = async ({
     componentNodes,
@@ -43,7 +48,11 @@ export const executeUpsert = async ({
     telemetry,
     cachePool,
     isInternal,
-    files
+    files,
+    orgId,
+    workspaceId,
+    subscriptionId,
+    usageCacheManager
 }: IExecuteFlowParams) => {
     const question = incomingInput.question
     let overrideConfig = incomingInput.overrideConfig ?? {}
@@ -56,11 +65,25 @@ export const executeUpsert = async ({
     if (files?.length) {
         overrideConfig = { ...incomingInput }
         for (const file of files) {
+            await checkStorage(orgId, subscriptionId, usageCacheManager)
+
             const fileNames: string[] = []
             const fileBuffer = await getFileFromUpload(file.path ?? file.key)
             // Address file name with special characters: https://github.com/expressjs/multer/issues/1104
             file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8')
-            const storagePath = await addArrayFilesToStorage(file.mimetype, fileBuffer, file.originalname, fileNames, chatflowid)
+
+            // Validate file extension, MIME type, and content to prevent security vulnerabilities
+            validateFileMimeTypeAndExtensionMatch(file.originalname, file.mimetype)
+
+            const { path: storagePath, totalSize } = await addArrayFilesToStorage(
+                file.mimetype,
+                fileBuffer,
+                file.originalname,
+                fileNames,
+                orgId,
+                chatflowid
+            )
+            await updateStorageUsage(orgId, workspaceId, totalSize, usageCacheManager)
 
             const fileInputFieldFromMimeType = mapMimeTypeToInputField(file.mimetype)
 
@@ -147,7 +170,7 @@ export const executeUpsert = async ({
     const { startingNodeIds, depthQueue } = getStartingNodes(filteredGraph, stopNodeId)
 
     /*** Get API Config ***/
-    const availableVariables = await appDataSource.getRepository(Variable).find()
+    const availableVariables = await appDataSource.getRepository(Variable).findBy(getWorkspaceSearchOptions(chatflow.workspaceId))
     const { nodeOverrides, variableOverrides, apiOverrideStatus } = getAPIOverrideConfig(chatflow)
 
     const upsertedResult = await buildFlow({
@@ -164,14 +187,20 @@ export const executeUpsert = async ({
         sessionId,
         chatflowid,
         appDataSource,
+        usageCacheManager,
+        cachePool,
+        isUpsert,
+        stopNodeId,
         overrideConfig,
         apiOverrideStatus,
         nodeOverrides,
         availableVariables,
         variableOverrides,
-        cachePool,
-        isUpsert,
-        stopNodeId
+        orgId,
+        workspaceId,
+        subscriptionId,
+        updateStorageUsage,
+        checkStorage
     })
 
     // Save to DB
@@ -186,13 +215,17 @@ export const executeUpsert = async ({
         await appDataSource.getRepository(UpsertHistory).save(upsertHistory)
     }
 
-    await telemetry.sendTelemetry('vector_upserted', {
-        version: await getAppVersion(),
-        chatlowId: chatflowid,
-        type: isInternal ? ChatType.INTERNAL : ChatType.EXTERNAL,
-        flowGraph: getTelemetryFlowObj(nodes, edges),
-        stopNodeId
-    })
+    await telemetry.sendTelemetry(
+        'vector_upserted',
+        {
+            version: await getAppVersion(),
+            chatlowId: chatflowid,
+            type: isInternal ? ChatType.INTERNAL : ChatType.EXTERNAL,
+            flowGraph: getTelemetryFlowObj(nodes, edges),
+            stopNodeId
+        },
+        orgId
+    )
 
     return upsertedResult['result'] ?? { result: 'Successfully Upserted' }
 }
@@ -204,6 +237,7 @@ export const executeUpsert = async ({
  */
 export const upsertVector = async (req: Request, isInternal: boolean = false) => {
     const appServer = getRunningExpressApp()
+
     try {
         const chatflowid = req.params.id
 
@@ -222,11 +256,33 @@ export const upsertVector = async (req: Request, isInternal: boolean = false) =>
         const files = (req.files as Express.Multer.File[]) || []
 
         if (!isInternal) {
-            const isKeyValidated = await validateChatflowAPIKey(req, chatflow)
+            const isKeyValidated = await validateFlowAPIKey(req, chatflow)
             if (!isKeyValidated) {
                 throw new InternalFlowiseError(StatusCodes.UNAUTHORIZED, `Unauthorized`)
             }
         }
+
+        const chatflowWorkspaceId = chatflow.workspaceId
+        const workspace = await appServer.AppDataSource.getRepository(Workspace).findOneBy({
+            id: chatflowWorkspaceId
+        })
+        if (!workspace) {
+            throw new InternalFlowiseError(StatusCodes.NOT_FOUND, `Workspace ${chatflowWorkspaceId} not found`)
+        }
+        const workspaceId = workspace.id
+
+        if (workspaceId !== req.user?.activeWorkspaceId) throw new InternalFlowiseError(StatusCodes.UNAUTHORIZED, 'Unauthorized')
+
+        const org = await appServer.AppDataSource.getRepository(Organization).findOneBy({
+            id: workspace.organizationId
+        })
+        if (!org) {
+            throw new InternalFlowiseError(StatusCodes.NOT_FOUND, `Organization ${workspace.organizationId} not found`)
+        }
+
+        const orgId = org.id
+        const subscriptionId = org.subscriptionId as string
+        const productId = await appServer.identityManager.getProductIdFromSubscription(subscriptionId)
 
         const executeData: IExecuteFlowParams = {
             componentNodes: appServer.nodesPool.componentNodes,
@@ -237,17 +293,22 @@ export const upsertVector = async (req: Request, isInternal: boolean = false) =>
             telemetry: appServer.telemetry,
             cachePool: appServer.cachePool,
             sseStreamer: appServer.sseStreamer,
+            usageCacheManager: appServer.usageCacheManager,
             baseURL,
             isInternal,
             files,
-            isUpsert: true
+            isUpsert: true,
+            orgId,
+            workspaceId,
+            subscriptionId,
+            productId
         }
 
         if (process.env.MODE === MODE.QUEUE) {
             const upsertQueue = appServer.queueManager.getQueue('upsert')
 
             const job = await upsertQueue.addJob(omit(executeData, OMIT_QUEUE_JOB_DATA))
-            logger.debug(`[server]: Job added to queue: ${job.id}`)
+            logger.debug(`[server]: [${orgId}]: Job added to queue: ${job.id}`)
 
             const queueEvents = upsertQueue.getQueueEvents()
             const result = await job.waitUntilFinished(queueEvents)

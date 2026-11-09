@@ -1,49 +1,102 @@
 import PropTypes from 'prop-types'
-import { useContext, useEffect, useRef, useState } from 'react'
-import { useSelector } from 'react-redux'
 import { Handle, Position, useUpdateNodeInternals } from 'reactflow'
+import { useEffect, useRef, useState, useContext } from 'react'
+import { useParams } from 'react-router-dom'
+import { useSelector, useDispatch } from 'react-redux'
+import { cloneDeep } from 'lodash'
+import showdown from 'showdown'
+import parser from 'html-react-parser'
 
 // material-ui
-import { Tabs } from '@mui/base/Tabs'
+import { useTheme, styled } from '@mui/material/styles'
+import {
+    Popper,
+    Box,
+    Typography,
+    Tooltip,
+    IconButton,
+    Button,
+    TextField,
+    Dialog,
+    DialogTitle,
+    DialogContent,
+    DialogActions,
+    Alert
+} from '@mui/material'
 import IconAutoFixHigh from '@mui/icons-material/AutoFixHigh'
-import { Box, Button, IconButton, Popper, TextField, Tooltip, Typography } from '@mui/material'
-import Autocomplete, { autocompleteClasses } from '@mui/material/Autocomplete'
-import { styled, useTheme } from '@mui/material/styles'
+import InputAdornment from '@mui/material/InputAdornment'
 import { tooltipClasses } from '@mui/material/Tooltip'
 import { useGridApiContext } from '@mui/x-data-grid'
-import { IconAlertTriangle, IconArrowsMaximize, IconBulb, IconEdit, IconRefresh } from '@tabler/icons-react'
+import {
+    IconWand,
+    IconVariable,
+    IconArrowsMaximize,
+    IconEdit,
+    IconAlertTriangle,
+    IconBulb,
+    IconRefresh,
+    IconX,
+    IconCopy
+} from '@tabler/icons-react'
+import { Tabs } from '@mui/base/Tabs'
+import Autocomplete, { autocompleteClasses } from '@mui/material/Autocomplete'
 
 // project import
-import { flowContext } from '@/store/context/ReactFlowContext'
-import ConditionDialog from '@/ui-component/dialog/ConditionDialog'
-import ExpandTextDialog from '@/ui-component/dialog/ExpandTextDialog'
-import FormatPromptValuesDialog from '@/ui-component/dialog/FormatPromptValuesDialog'
-import InputHintDialog from '@/ui-component/dialog/InputHintDialog'
-import ManageScrapedLinksDialog from '@/ui-component/dialog/ManageScrapedLinksDialog'
-import NvidiaNIMDialog from '@/ui-component/dialog/NvidiaNIMDialog'
-import PromptLangsmithHubDialog from '@/ui-component/dialog/PromptLangsmithHubDialog'
-import { AsyncDropdown } from '@/ui-component/dropdown/AsyncDropdown'
 import { Dropdown } from '@/ui-component/dropdown/Dropdown'
 import { MultiDropdown } from '@/ui-component/dropdown/MultiDropdown'
-import { CodeEditor } from '@/ui-component/editor/CodeEditor'
-import { File } from '@/ui-component/file/File'
-import { DataGrid } from '@/ui-component/grid/DataGrid'
+import { AsyncDropdown } from '@/ui-component/dropdown/AsyncDropdown'
 import { Input } from '@/ui-component/input/Input'
-import { JsonEditorInput } from '@/ui-component/json/JsonEditor'
+import { RichInput } from '@/ui-component/input/RichInput'
+import { DataGrid } from '@/ui-component/grid/DataGrid'
+import { File } from '@/ui-component/file/File'
 import { SwitchInput } from '@/ui-component/switch/Switch'
-import { Tab } from '@/ui-component/tabs/Tab'
+import { flowContext } from '@/store/context/ReactFlowContext'
+import { JsonEditorInput } from '@/ui-component/json/JsonEditor'
+import { TooltipWithParser } from '@/ui-component/tooltip/TooltipWithParser'
+import { CodeEditor } from '@/ui-component/editor/CodeEditor'
 import { TabPanel } from '@/ui-component/tabs/TabPanel'
 import { TabsList } from '@/ui-component/tabs/TabsList'
-import { TooltipWithParser } from '@/ui-component/tooltip/TooltipWithParser'
-import AssistantDialog from '@/views/assistants/openai/AssistantDialog'
+import { ArrayRenderer } from '@/ui-component/array/ArrayRenderer'
+import { Tab } from '@/ui-component/tabs/Tab'
+import { ConfigInput } from '@/views/agentflowsv2/ConfigInput'
+import { BackdropLoader } from '@/ui-component/loading/BackdropLoader'
+import DocStoreInputHandler from '@/views/docstore/DocStoreInputHandler'
+import { TimePicker } from '@/ui-component/picker/TimePicker'
+import { WeekDaysPicker } from '@/ui-component/picker/WeekDaysPicker'
+import { MonthDaysPicker } from '@/ui-component/picker/MonthDaysPicker'
+import { DatePicker } from '@/ui-component/picker/DatePicker'
+
 import ToolDialog from '@/views/tools/ToolDialog'
+import AssistantDialog from '@/views/assistants/openai/AssistantDialog'
+import FormatPromptValuesDialog from '@/ui-component/dialog/FormatPromptValuesDialog'
+import ExpandTextDialog from '@/ui-component/dialog/ExpandTextDialog'
+import ExpandRichInputDialog from '@/ui-component/dialog/ExpandRichInputDialog'
+import ConditionDialog from '@/ui-component/dialog/ConditionDialog'
+import PromptLangsmithHubDialog from '@/ui-component/dialog/PromptLangsmithHubDialog'
+import ManageScrapedLinksDialog from '@/ui-component/dialog/ManageScrapedLinksDialog'
 import CredentialInputHandler from './CredentialInputHandler'
+import InputHintDialog from '@/ui-component/dialog/InputHintDialog'
+import NvidiaNIMDialog from '@/ui-component/dialog/NvidiaNIMDialog'
+import PromptGeneratorDialog from '@/ui-component/dialog/PromptGeneratorDialog'
+
+// API
+import assistantsApi from '@/api/assistants'
+import chatflowsApi from '@/api/chatflows'
+import documentstoreApi from '@/api/documentstore'
 
 // utils
-import { getAvailableNodesForVariable, getCustomConditionOutputs, getInputVariables, isValidConnection } from '@/utils/genericHelper'
+import {
+    initNode,
+    getInputVariables,
+    getCustomConditionOutputs,
+    isValidConnection,
+    getAvailableNodesForVariable
+} from '@/utils/genericHelper'
+import useNotifier from '@/utils/useNotifier'
 
 // const
-import { FLOWISE_CREDENTIAL_ID } from '@/store/constant'
+import { baseURL, FLOWISE_CREDENTIAL_ID } from '@/store/constant'
+import { closeSnackbar as closeSnackbarAction, enqueueSnackbar as enqueueSnackbarAction, SET_CHATFLOW } from '@/store/actions'
 
 const EDITABLE_OPTIONS = ['selectedTool', 'selectedAssistant']
 
@@ -65,6 +118,13 @@ const StyledPopper = styled(Popper)({
     }
 })
 
+const markdownConverter = new showdown.Converter({
+    simplifiedAutoLink: true,
+    strikethrough: true,
+    tables: true,
+    tasklists: true
+})
+
 // ===========================|| NodeInputHandler ||=========================== //
 
 const NodeInputHandler = ({
@@ -74,16 +134,31 @@ const NodeInputHandler = ({
     disabled = false,
     isAdditionalParams = false,
     disablePadding = false,
-    onHideNodeInfoDialog
+    parentParamForArray = null,
+    arrayIndex = null,
+    onHideNodeInfoDialog,
+    onCustomDataChange
 }) => {
+    const { id: chatflowIdFromParams } = useParams()
+    const canvasChatflow = useSelector((state) => state.canvas.chatflow)
+    const chatflowId = chatflowIdFromParams || canvasChatflow?.id
+
     const theme = useTheme()
     const customization = useSelector((state) => state.customization)
     const ref = useRef(null)
-    const { reactFlowInstance, deleteEdge } = useContext(flowContext)
+    const { reactFlowInstance, deleteEdge, onNodeDataChange } = useContext(flowContext)
     const updateNodeInternals = useUpdateNodeInternals()
+
+    useNotifier()
+    const dispatch = useDispatch()
+    const enqueueSnackbar = (...args) => dispatch(enqueueSnackbarAction(...args))
+    const closeSnackbar = (...args) => dispatch(closeSnackbarAction(...args))
+
     const [position, setPosition] = useState(0)
     const [showExpandDialog, setShowExpandDialog] = useState(false)
     const [expandDialogProps, setExpandDialogProps] = useState({})
+    const [showExpandRichDialog, setShowExpandRichDialog] = useState(false)
+    const [expandRichDialogProps, setExpandRichDialogProps] = useState({})
     const [showAsyncOptionDialog, setAsyncOptionEditDialog] = useState('')
     const [asyncOptionEditDialogProps, setAsyncOptionEditDialogProps] = useState({})
     const [reloadTimestamp, setReloadTimestamp] = useState(Date.now().toString())
@@ -99,6 +174,68 @@ const NodeInputHandler = ({
     const [isNvidiaNIMDialogOpen, setIsNvidiaNIMDialogOpen] = useState(false)
     const [tabValue, setTabValue] = useState(0)
 
+    // Webhook secret — holds plaintext only for the current session (generate/regenerate response).
+    // Cleared on page reload; the configured state comes from canvasChatflow.webhookSecretConfigured.
+    const [webhookSecretPlaintext, setWebhookSecretPlaintext] = useState(null)
+
+    const handleSetWebhookSecret = async () => {
+        if (!chatflowId) return
+        try {
+            const resp = await chatflowsApi.setWebhookSecret(chatflowId)
+            setWebhookSecretPlaintext(resp.data.webhookSecret)
+            dispatch({ type: SET_CHATFLOW, chatflow: { ...canvasChatflow, webhookSecretConfigured: true } })
+            enqueueSnackbar({
+                message: 'Webhook secret generated.',
+                options: { key: new Date().getTime() + Math.random(), variant: 'success' }
+            })
+        } catch (error) {
+            enqueueSnackbar({
+                message: error?.response?.data?.message || 'Failed to generate webhook secret.',
+                options: { key: new Date().getTime() + Math.random(), variant: 'error' }
+            })
+        }
+    }
+
+    const handleClearWebhookSecret = async () => {
+        if (!chatflowId) return
+        try {
+            await chatflowsApi.clearWebhookSecret(chatflowId)
+            setWebhookSecretPlaintext(null)
+            dispatch({ type: SET_CHATFLOW, chatflow: { ...canvasChatflow, webhookSecretConfigured: false } })
+            enqueueSnackbar({
+                message: 'Webhook secret removed.',
+                options: { key: new Date().getTime() + Math.random(), variant: 'success' }
+            })
+        } catch (error) {
+            enqueueSnackbar({
+                message: error?.response?.data?.message || 'Failed to remove webhook secret.',
+                options: { key: new Date().getTime() + Math.random(), variant: 'error' }
+            })
+        }
+    }
+
+    const [modelSelectionDialogOpen, setModelSelectionDialogOpen] = useState(false)
+    const [availableChatModels, setAvailableChatModels] = useState([])
+    const [availableChatModelsOptions, setAvailableChatModelsOptions] = useState([])
+    const [selectedTempChatModel, setSelectedTempChatModel] = useState({})
+    const [modelSelectionCallback, setModelSelectionCallback] = useState(null)
+    const [loading, setLoading] = useState(false)
+
+    const [promptGeneratorDialogOpen, setPromptGeneratorDialogOpen] = useState(false)
+    const [promptGeneratorDialogProps, setPromptGeneratorDialogProps] = useState({})
+
+    const handleDataChange = ({ inputParam, newValue }) => {
+        data.inputs[inputParam.name] = newValue
+        const allowedShowHideInputTypes = ['boolean', 'asyncOptions', 'asyncMultiOptions', 'options', 'multiOptions']
+        if (allowedShowHideInputTypes.includes(inputParam.type)) {
+            if (onCustomDataChange) {
+                onCustomDataChange({ nodeId: data.id, inputParam, newValue })
+            } else {
+                onNodeDataChange({ nodeId: data.id, inputParam, newValue })
+            }
+        }
+    }
+
     const onInputHintDialogClicked = (hint) => {
         const dialogProps = {
             ...hint
@@ -113,11 +250,19 @@ const NodeInputHandler = ({
             inputParam,
             disabled,
             languageType,
+            nodes: reactFlowInstance?.getNodes() || [],
+            edges: reactFlowInstance?.getEdges() || [],
+            nodeId: data.id,
             confirmButtonName: 'Save',
             cancelButtonName: 'Cancel'
         }
-        setExpandDialogProps(dialogProps)
-        setShowExpandDialog(true)
+        if (inputParam.acceptVariable) {
+            setExpandRichDialogProps(dialogProps)
+            setShowExpandRichDialog(true)
+        } else {
+            setExpandDialogProps(dialogProps)
+            setShowExpandDialog(true)
+        }
     }
 
     const onConditionDialogClicked = (inputParam) => {
@@ -375,6 +520,11 @@ const NodeInputHandler = ({
         setShowExpandDialog(false)
     }
 
+    const onExpandRichDialogSave = (newValue, inputParamName) => {
+        data.inputs[inputParamName] = newValue
+        setShowExpandRichDialog(false)
+    }
+
     const onConditionDialogSave = (newData, inputParam, tabValue) => {
         data.inputs[`${inputParam.tabIdentifier}_${data.id}`] = inputParam.tabs[tabValue].name
 
@@ -437,8 +587,10 @@ const NodeInputHandler = ({
     const onConfirmAsyncOption = (selectedOptionId = '') => {
         if (!selectedOptionId) {
             data.inputs[showAsyncOptionDialog] = ''
+            handleDataChange({ inputParam: { name: showAsyncOptionDialog }, newValue: '' })
         } else {
             data.inputs[showAsyncOptionDialog] = selectedOptionId
+            handleDataChange({ inputParam: { name: showAsyncOptionDialog }, newValue: selectedOptionId })
             setReloadTimestamp(Date.now().toString())
         }
         setAsyncOptionEditDialogProps({})
@@ -452,6 +604,230 @@ const NodeInputHandler = ({
         }
     }
 
+    const loadChatModels = async () => {
+        try {
+            const resp = await assistantsApi.getChatModels()
+            if (resp.data) {
+                const chatModels = resp.data ?? []
+                const chatModelsOptions = chatModels.map((model) => ({
+                    name: model.name,
+                    label: model.label,
+                    description: model.description,
+                    imageSrc: `${baseURL}/api/v1/node-icon/${model.name}`
+                }))
+                setAvailableChatModels(chatModels)
+                setAvailableChatModelsOptions(chatModelsOptions)
+            }
+        } catch (error) {
+            console.error('Error loading chat models:', error)
+        }
+    }
+
+    const checkInputParamsMandatory = () => {
+        let canSubmit = true
+
+        if (selectedTempChatModel && Object.keys(selectedTempChatModel).length > 0) {
+            const inputParams = (selectedTempChatModel.inputParams ?? []).filter((inputParam) => !inputParam.hidden)
+            for (const inputParam of inputParams) {
+                if (!inputParam.optional && (!selectedTempChatModel.inputs[inputParam.name] || !selectedTempChatModel.credential)) {
+                    if (inputParam.type === 'credential' && !selectedTempChatModel.credential) {
+                        canSubmit = false
+                        break
+                    } else if (inputParam.type !== 'credential' && !selectedTempChatModel.inputs[inputParam.name]) {
+                        canSubmit = false
+                        break
+                    }
+                }
+            }
+        }
+
+        return canSubmit
+    }
+
+    const displayWarning = () => {
+        enqueueSnackbar({
+            message: 'Please fill in all mandatory fields.',
+            options: {
+                key: new Date().getTime() + Math.random(),
+                variant: 'warning',
+                action: (key) => (
+                    <Button style={{ color: 'white' }} onClick={() => closeSnackbar(key)}>
+                        <IconX />
+                    </Button>
+                )
+            }
+        })
+    }
+
+    const generateDocStoreToolDesc = async (storeId) => {
+        if (!storeId) {
+            enqueueSnackbar({
+                message: 'Please select a knowledge base',
+                options: {
+                    key: new Date().getTime() + Math.random(),
+                    variant: 'error',
+                    action: (key) => (
+                        <Button style={{ color: 'white' }} onClick={() => closeSnackbar(key)}>
+                            <IconX />
+                        </Button>
+                    )
+                }
+            })
+            return
+        }
+        storeId = storeId.split(':')[0]
+        const isValid = checkInputParamsMandatory()
+        if (!isValid) {
+            displayWarning()
+            return
+        }
+
+        // Check if model is already selected in the node
+        const currentNode = reactFlowInstance?.getNodes().find((node) => node.id === data.id)
+        const currentNodeInputs = currentNode?.data?.inputs
+
+        const existingModel = currentNodeInputs?.llmModel || currentNodeInputs?.agentModel || currentNodeInputs?.humanInputModel
+        if (existingModel) {
+            try {
+                setLoading(true)
+                const selectedChatModelObj = {
+                    name: existingModel,
+                    inputs:
+                        currentNodeInputs?.llmModelConfig || currentNodeInputs?.agentModelConfig || currentNodeInputs?.humanInputModelConfig
+                }
+                const resp = await documentstoreApi.generateDocStoreToolDesc(storeId, { selectedChatModel: selectedChatModelObj })
+                if (resp.data) {
+                    setLoading(false)
+                    const content = resp.data?.content || resp.data.kwargs?.content
+                    // Update the input value directly
+                    data.inputs[inputParam.name] = content
+                    enqueueSnackbar({
+                        message: 'Document Store Tool Description generated successfully',
+                        options: {
+                            key: new Date().getTime() + Math.random(),
+                            variant: 'success',
+                            action: (key) => (
+                                <Button style={{ color: 'white' }} onClick={() => closeSnackbar(key)}>
+                                    <IconX />
+                                </Button>
+                            )
+                        }
+                    })
+                }
+            } catch (error) {
+                console.error('Error generating doc store tool desc', error)
+                setLoading(false)
+                enqueueSnackbar({
+                    message: typeof error.response.data === 'object' ? error.response.data.message : error.response.data,
+                    options: {
+                        key: new Date().getTime() + Math.random(),
+                        variant: 'error',
+                        persist: true,
+                        action: (key) => (
+                            <Button style={{ color: 'white' }} onClick={() => closeSnackbar(key)}>
+                                <IconX />
+                            </Button>
+                        )
+                    }
+                })
+            }
+            return
+        }
+
+        // If no model selected, load chat models and open model selection dialog
+        await loadChatModels()
+        setModelSelectionCallback(() => async (selectedModel) => {
+            try {
+                setLoading(true)
+                const selectedChatModelObj = {
+                    name: selectedModel.name,
+                    inputs: selectedModel.inputs
+                }
+                const resp = await documentstoreApi.generateDocStoreToolDesc(storeId, { selectedChatModel: selectedChatModelObj })
+                if (resp.data) {
+                    setLoading(false)
+                    const content = resp.data?.content || resp.data.kwargs?.content
+                    // Update the input value directly
+                    data.inputs[inputParam.name] = content
+                    enqueueSnackbar({
+                        message: 'Document Store Tool Description generated successfully',
+                        options: {
+                            key: new Date().getTime() + Math.random(),
+                            variant: 'success',
+                            action: (key) => (
+                                <Button style={{ color: 'white' }} onClick={() => closeSnackbar(key)}>
+                                    <IconX />
+                                </Button>
+                            )
+                        }
+                    })
+                }
+            } catch (error) {
+                console.error('Error generating doc store tool desc', error)
+                setLoading(false)
+                enqueueSnackbar({
+                    message: typeof error.response.data === 'object' ? error.response.data.message : error.response.data,
+                    options: {
+                        key: new Date().getTime() + Math.random(),
+                        variant: 'error',
+                        persist: true,
+                        action: (key) => (
+                            <Button style={{ color: 'white' }} onClick={() => closeSnackbar(key)}>
+                                <IconX />
+                            </Button>
+                        )
+                    }
+                })
+            }
+        })
+        setModelSelectionDialogOpen(true)
+    }
+
+    const generateInstruction = async () => {
+        const isValid = checkInputParamsMandatory()
+        if (!isValid) {
+            displayWarning()
+            return
+        }
+
+        const currentNode = reactFlowInstance?.getNodes().find((node) => node.id === data.id)
+        const currentNodeInputs = currentNode?.data?.inputs
+
+        // Check if model is already selected in the node
+        const existingModel = currentNodeInputs?.llmModel || currentNodeInputs?.agentModel || currentNodeInputs?.humanInputModel
+        if (existingModel) {
+            // Open prompt generator dialog directly with existing model
+            setPromptGeneratorDialogProps({
+                title: 'Generate Instructions',
+                description: 'You can generate a prompt template by sharing basic details about your task.',
+                data: {
+                    selectedChatModel: {
+                        name: existingModel,
+                        inputs:
+                            currentNodeInputs?.llmModelConfig ||
+                            currentNodeInputs?.agentModelConfig ||
+                            currentNodeInputs?.humanInputModelConfig
+                    }
+                }
+            })
+            setPromptGeneratorDialogOpen(true)
+            return
+        }
+
+        // If no model selected, load chat models and open model selection dialog
+        await loadChatModels()
+        setModelSelectionCallback(() => async (selectedModel) => {
+            // After model selection, open prompt generator dialog
+            setPromptGeneratorDialogProps({
+                title: 'Generate Instructions',
+                description: 'You can generate a prompt template by sharing basic details about your task.',
+                data: { selectedChatModel: selectedModel }
+            })
+            setPromptGeneratorDialogOpen(true)
+        })
+        setModelSelectionDialogOpen(true)
+    }
+
     useEffect(() => {
         if (ref.current && ref.current.offsetTop && ref.current.clientHeight) {
             setPosition(ref.current.offsetTop + ref.current.clientHeight / 2)
@@ -462,6 +838,10 @@ const NodeInputHandler = ({
     useEffect(() => {
         updateNodeInternals(data.id)
     }, [data.id, position, updateNodeInternals])
+
+    const webhookMethod = data.inputs?.webhookMethod ?? 'POST'
+    const webhookUrlBase = chatflowId ? `${baseURL}/api/v1/webhook/${chatflowId}` : null
+    const webhookUrl = webhookUrlBase ? `${webhookMethod} ${webhookUrlBase}` : 'Save the flow first to generate the webhook URL'
 
     return (
         <div ref={ref}>
@@ -537,7 +917,7 @@ const NodeInputHandler = ({
                                     ></PromptLangsmithHubDialog>
                                 </>
                             )}
-                        {data.name === 'Chat NVIDIA NIM' && inputParam.name === 'modelName' && (
+                        {data.name === 'chatNvidiaNIM' && inputParam.name === 'modelName' && (
                             <>
                                 <Button
                                     style={{
@@ -553,7 +933,7 @@ const NodeInputHandler = ({
                                 </Button>
                             </>
                         )}
-                        <div style={{ display: 'flex', flexDirection: 'row' }}>
+                        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center' }}>
                             <Typography>
                                 {inputParam.label}
                                 {!inputParam.optional && <span style={{ color: 'red' }}>&nbsp;*</span>}
@@ -587,12 +967,47 @@ const NodeInputHandler = ({
                                     {inputParam.hint.label}
                                 </Button>
                             )}
+                            {inputParam.acceptVariable && inputParam.type === 'string' && (
+                                <Tooltip title='Type {{ to select variables'>
+                                    <IconVariable size={20} style={{ color: 'teal' }} />
+                                </Tooltip>
+                            )}
+                            {inputParam.generateDocStoreDescription && (
+                                <IconButton
+                                    title='Generate knowledge base description'
+                                    sx={{
+                                        height: 25,
+                                        width: 25
+                                    }}
+                                    size='small'
+                                    color='secondary'
+                                    onClick={() => generateDocStoreToolDesc(data.inputs['documentStore'])}
+                                >
+                                    <IconWand />
+                                </IconButton>
+                            )}
+                            {inputParam.generateInstruction && (
+                                <IconButton
+                                    title='Generate instructions'
+                                    sx={{
+                                        height: 25,
+                                        width: 25,
+                                        ml: 0.5
+                                    }}
+                                    size='small'
+                                    color='secondary'
+                                    onClick={() => generateInstruction()}
+                                >
+                                    <IconWand />
+                                </IconButton>
+                            )}
                             {((inputParam.type === 'string' && inputParam.rows) || inputParam.type === 'code') && (
                                 <IconButton
                                     size='small'
                                     sx={{
                                         height: 25,
-                                        width: 25
+                                        width: 25,
+                                        ml: 0.5
                                     }}
                                     title='Expand'
                                     color='primary'
@@ -618,7 +1033,7 @@ const NodeInputHandler = ({
                                 }}
                             >
                                 <IconAlertTriangle size={30} color='orange' />
-                                <span style={{ color: 'rgb(116,66,16)', marginLeft: 10 }}>{inputParam.warning}</span>
+                                <span style={{ color: 'rgb(116,66,16)', marginLeft: 10 }}>{parser(inputParam.warning)}</span>
                             </div>
                         )}
                         {inputParam.type === 'credential' && (
@@ -650,17 +1065,19 @@ const NodeInputHandler = ({
                                         ))}
                                     </TabsList>
                                 </Tabs>
-                                {inputParam.tabs.map((inputChildParam, index) => (
-                                    <TabPanel key={index} value={getTabValue(inputParam)} index={index}>
-                                        <NodeInputHandler
-                                            disabled={inputChildParam.disabled}
-                                            inputParam={inputChildParam}
-                                            data={data}
-                                            isAdditionalParams={true}
-                                            disablePadding={true}
-                                        />
-                                    </TabPanel>
-                                ))}
+                                {inputParam.tabs
+                                    .filter((inputParam) => inputParam.display !== false)
+                                    .map((inputChildParam, index) => (
+                                        <TabPanel key={index} value={getTabValue(inputParam)} index={index}>
+                                            <NodeInputHandler
+                                                disabled={inputChildParam.disabled}
+                                                inputParam={inputChildParam}
+                                                data={data}
+                                                isAdditionalParams={true}
+                                                disablePadding={true}
+                                            />
+                                        </TabPanel>
+                                    ))}
                             </>
                         )}
                         {inputParam.type === 'file' && (
@@ -674,7 +1091,7 @@ const NodeInputHandler = ({
                         {inputParam.type === 'boolean' && (
                             <SwitchInput
                                 disabled={disabled}
-                                onChange={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                onChange={(newValue) => handleDataChange({ inputParam, newValue })}
                                 value={data.inputs[inputParam.name] ?? inputParam.default ?? false}
                             />
                         )}
@@ -695,6 +1112,7 @@ const NodeInputHandler = ({
                                             variant='outlined'
                                             onClick={() => {
                                                 data.inputs[inputParam.name] = inputParam.codeExample
+                                                setReloadTimestamp(Date.now().toString())
                                             }}
                                         >
                                             See Example
@@ -702,10 +1120,11 @@ const NodeInputHandler = ({
                                     )}
                                 </div>
                                 <div
+                                    key={`${reloadTimestamp}_${data.id}}`}
                                     style={{
                                         marginTop: '10px',
                                         border: '1px solid',
-                                        borderColor: theme.palette.grey['300'],
+                                        borderColor: theme.palette.grey[900] + 25,
                                         borderRadius: '6px',
                                         height: inputParam.rows ? '100px' : '200px'
                                     }}
@@ -723,18 +1142,171 @@ const NodeInputHandler = ({
                                 </div>
                             </>
                         )}
-                        {(inputParam.type === 'string' || inputParam.type === 'password' || inputParam.type === 'number') && (
-                            <Input
-                                key={data.inputs[inputParam.name]}
-                                disabled={disabled}
-                                inputParam={inputParam}
-                                onChange={(newValue) => (data.inputs[inputParam.name] = newValue)}
-                                value={data.inputs[inputParam.name] ?? inputParam.default ?? ''}
-                                nodes={inputParam?.acceptVariable && reactFlowInstance ? reactFlowInstance.getNodes() : []}
-                                edges={inputParam?.acceptVariable && reactFlowInstance ? reactFlowInstance.getEdges() : []}
-                                nodeId={data.id}
+
+                        {inputParam.name === 'webhookURL' && (
+                            <TextField
+                                fullWidth
+                                size='small'
+                                disabled
+                                value={webhookUrl}
+                                sx={{ mt: 1 }}
+                                InputProps={{
+                                    readOnly: true,
+                                    endAdornment: chatflowId ? (
+                                        <InputAdornment position='end'>
+                                            <Tooltip title='Copy URL'>
+                                                <IconButton
+                                                    size='small'
+                                                    onClick={() => {
+                                                        navigator.clipboard.writeText(webhookUrlBase).then(
+                                                            () =>
+                                                                enqueueSnackbar({
+                                                                    message: 'URL copied!',
+                                                                    options: {
+                                                                        key: new Date().getTime() + Math.random(),
+                                                                        variant: 'success'
+                                                                    }
+                                                                }),
+                                                            () =>
+                                                                enqueueSnackbar({
+                                                                    message: 'Failed to copy URL.',
+                                                                    options: { key: new Date().getTime() + Math.random(), variant: 'error' }
+                                                                })
+                                                        )
+                                                    }}
+                                                >
+                                                    {/* Match the Start node's accent green (#7EE787) so the copy
+                                                        action reads as a "primary" action on this node. */}
+                                                    <IconCopy size={16} color='#7EE787' />
+                                                </IconButton>
+                                            </Tooltip>
+                                        </InputAdornment>
+                                    ) : undefined
+                                }}
                             />
                         )}
+
+                        {inputParam.name === 'webhookSecret' && (
+                            <Box sx={{ mt: 1 }}>
+                                {!canvasChatflow?.webhookSecretConfigured && !webhookSecretPlaintext ? (
+                                    // Not configured
+                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                        <Alert
+                                            severity='warning'
+                                            variant='outlined'
+                                            sx={{
+                                                py: 0.5,
+                                                color: customization.isDarkMode ? 'rgba(255, 215, 130, 0.95)' : 'warning.dark',
+                                                borderColor: customization.isDarkMode ? 'rgba(255, 167, 38, 0.5)' : 'warning.light',
+                                                backgroundColor: customization.isDarkMode
+                                                    ? 'rgba(255, 167, 38, 0.08)'
+                                                    : 'rgba(255, 244, 229, 0.6)',
+                                                '& .MuiAlert-icon': {
+                                                    color: customization.isDarkMode ? 'rgba(255, 167, 38, 0.95)' : 'warning.main'
+                                                }
+                                            }}
+                                        >
+                                            Generate a secret below — without one, every incoming webhook request will be rejected.
+                                        </Alert>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                            <Typography variant='body2' sx={{ color: 'text.secondary', flexGrow: 1 }}>
+                                                No secret configured
+                                            </Typography>
+                                            {chatflowId && (
+                                                <Button size='small' variant='outlined' onClick={handleSetWebhookSecret}>
+                                                    Generate Secret
+                                                </Button>
+                                            )}
+                                        </Box>
+                                    </Box>
+                                ) : (
+                                    // Configured — show masked or plaintext field with actions
+                                    <TextField
+                                        fullWidth
+                                        size='small'
+                                        type='password'
+                                        disabled
+                                        value={webhookSecretPlaintext ?? '••••••••••••••••••••••••'}
+                                        InputProps={{
+                                            readOnly: true,
+                                            endAdornment: (
+                                                <InputAdornment position='end' sx={{ gap: 0.5 }}>
+                                                    {webhookSecretPlaintext && (
+                                                        <Tooltip title='Copy secret'>
+                                                            <IconButton
+                                                                size='small'
+                                                                onClick={() => {
+                                                                    navigator.clipboard.writeText(webhookSecretPlaintext).then(
+                                                                        () =>
+                                                                            enqueueSnackbar({
+                                                                                message: 'Secret copied!',
+                                                                                options: {
+                                                                                    key: new Date().getTime() + Math.random(),
+                                                                                    variant: 'success'
+                                                                                }
+                                                                            }),
+                                                                        () =>
+                                                                            enqueueSnackbar({
+                                                                                message: 'Failed to copy secret.',
+                                                                                options: {
+                                                                                    key: new Date().getTime() + Math.random(),
+                                                                                    variant: 'error'
+                                                                                }
+                                                                            })
+                                                                    )
+                                                                }}
+                                                            >
+                                                                <IconCopy size={16} />
+                                                            </IconButton>
+                                                        </Tooltip>
+                                                    )}
+                                                    <Tooltip title='Regenerate secret'>
+                                                        <IconButton size='small' onClick={handleSetWebhookSecret}>
+                                                            <IconRefresh size={16} />
+                                                        </IconButton>
+                                                    </Tooltip>
+                                                    <Tooltip title='Remove secret'>
+                                                        <IconButton size='small' onClick={handleClearWebhookSecret}>
+                                                            <IconX size={16} />
+                                                        </IconButton>
+                                                    </Tooltip>
+                                                </InputAdornment>
+                                            )
+                                        }}
+                                    />
+                                )}
+                            </Box>
+                        )}
+
+                        {inputParam.name !== 'webhookURL' &&
+                            inputParam.name !== 'webhookSecret' &&
+                            (inputParam.type === 'string' || inputParam.type === 'password' || inputParam.type === 'number') &&
+                            (inputParam?.acceptVariable &&
+                            (window.location.href.includes('v2/agentcanvas') || window.location.href.includes('v2/marketplace')) ? (
+                                <RichInput
+                                    key={data.inputs[inputParam.name]}
+                                    placeholder={inputParam.placeholder}
+                                    disabled={disabled}
+                                    inputParam={inputParam}
+                                    onChange={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                    value={data.inputs[inputParam.name] ?? inputParam.default ?? ''}
+                                    nodes={reactFlowInstance ? reactFlowInstance.getNodes() : []}
+                                    edges={reactFlowInstance ? reactFlowInstance.getEdges() : []}
+                                    nodeId={data.id}
+                                />
+                            ) : (
+                                <Input
+                                    key={data.inputs[inputParam.name]}
+                                    placeholder={inputParam.placeholder}
+                                    disabled={disabled}
+                                    inputParam={inputParam}
+                                    onChange={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                    value={data.inputs[inputParam.name] ?? inputParam.default ?? ''}
+                                    nodes={[]}
+                                    edges={[]}
+                                    nodeId={data.id}
+                                />
+                            ))}
                         {inputParam.type === 'json' && (
                             <>
                                 {!inputParam?.acceptVariable && (
@@ -777,28 +1349,35 @@ const NodeInputHandler = ({
                             </>
                         )}
                         {inputParam.type === 'options' && (
-                            <Dropdown
-                                disabled={disabled}
-                                name={inputParam.name}
-                                options={getDropdownOptions(inputParam)}
-                                freeSolo={inputParam.freeSolo}
-                                onSelect={(newValue) => (data.inputs[inputParam.name] = newValue)}
-                                value={data.inputs[inputParam.name] ?? inputParam.default ?? 'choose an option'}
-                            />
+                            <div key={`${data.id}_${JSON.stringify(data.inputs[inputParam.name])}`}>
+                                <Dropdown
+                                    disabled={disabled}
+                                    name={inputParam.name}
+                                    options={getDropdownOptions(inputParam)}
+                                    freeSolo={inputParam.freeSolo}
+                                    onSelect={(newValue) => handleDataChange({ inputParam, newValue })}
+                                    value={data.inputs[inputParam.name] ?? inputParam.default ?? 'choose an option'}
+                                />
+                            </div>
                         )}
                         {inputParam.type === 'multiOptions' && (
-                            <MultiDropdown
-                                disabled={disabled}
-                                name={inputParam.name}
-                                options={getDropdownOptions(inputParam)}
-                                onSelect={(newValue) => (data.inputs[inputParam.name] = newValue)}
-                                value={data.inputs[inputParam.name] ?? inputParam.default ?? 'choose an option'}
-                            />
+                            <div key={`${data.id}_${JSON.stringify(data.inputs[inputParam.name])}`}>
+                                <MultiDropdown
+                                    disabled={disabled}
+                                    name={inputParam.name}
+                                    options={getDropdownOptions(inputParam)}
+                                    onSelect={(newValue) => handleDataChange({ inputParam, newValue })}
+                                    value={data.inputs[inputParam.name] ?? inputParam.default ?? 'choose an option'}
+                                />
+                            </div>
                         )}
                         {(inputParam.type === 'asyncOptions' || inputParam.type === 'asyncMultiOptions') && (
                             <>
                                 {data.inputParams.length === 1 && <div style={{ marginTop: 10 }} />}
-                                <div key={reloadTimestamp} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 1 }}>
+                                <div
+                                    key={`${reloadTimestamp}_${data.id}_${JSON.stringify(data.inputs[inputParam.name])}`}
+                                    style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 1 }}
+                                >
                                     <AsyncDropdown
                                         disabled={disabled}
                                         name={inputParam.name}
@@ -807,7 +1386,10 @@ const NodeInputHandler = ({
                                         freeSolo={inputParam.freeSolo}
                                         multiple={inputParam.type === 'asyncMultiOptions'}
                                         isCreateNewOption={EDITABLE_OPTIONS.includes(inputParam.name)}
-                                        onSelect={(newValue) => (data.inputs[inputParam.name] = newValue)}
+                                        onSelect={(newValue) => {
+                                            if (inputParam.loadConfig) setReloadTimestamp(Date.now().toString())
+                                            handleDataChange({ inputParam, newValue })
+                                        }}
                                         onCreateNew={() => addAsyncOption(inputParam.name)}
                                     />
                                     {EDITABLE_OPTIONS.includes(inputParam.name) && data.inputs[inputParam.name] && (
@@ -833,6 +1415,38 @@ const NodeInputHandler = ({
                                 </div>
                             </>
                         )}
+                        {inputParam.type === 'timePicker' && (
+                            <TimePicker
+                                disabled={disabled}
+                                value={data.inputs[inputParam.name] ?? inputParam.default ?? ''}
+                                placeholder={inputParam.placeholder}
+                                onChange={(newValue) => handleDataChange({ inputParam, newValue })}
+                            />
+                        )}
+                        {inputParam.type === 'weekDaysPicker' && (
+                            <WeekDaysPicker
+                                disabled={disabled}
+                                value={data.inputs[inputParam.name] ?? inputParam.default ?? ''}
+                                options={inputParam.options}
+                                onChange={(newValue) => handleDataChange({ inputParam, newValue })}
+                            />
+                        )}
+                        {inputParam.type === 'monthDaysPicker' && (
+                            <MonthDaysPicker
+                                disabled={disabled}
+                                value={data.inputs[inputParam.name] ?? inputParam.default ?? ''}
+                                onChange={(newValue) => handleDataChange({ inputParam, newValue })}
+                            />
+                        )}
+                        {inputParam.type === 'datePicker' && (
+                            <DatePicker
+                                disabled={disabled}
+                                value={data.inputs[inputParam.name] ?? inputParam.default ?? ''}
+                                placeholder={inputParam.placeholder}
+                                onChange={(newValue) => handleDataChange({ inputParam, newValue })}
+                            />
+                        )}
+                        {inputParam.type === 'array' && <ArrayRenderer inputParam={inputParam} data={data} disabled={disabled} />}
                         {/* CUSTOM INPUT LOGIC */}
                         {inputParam.type.includes('conditionFunction') && (
                             <>
@@ -883,6 +1497,20 @@ const NodeInputHandler = ({
                                     />
                                 </>
                             )}
+                        {inputParam.loadConfig && data && data.inputs && data.inputs[inputParam.name] && (
+                            <>
+                                <ConfigInput
+                                    key={`${data.id}_${JSON.stringify(data.inputs[inputParam.name])}_${arrayIndex}_${
+                                        parentParamForArray?.name
+                                    }`}
+                                    data={data}
+                                    inputParam={inputParam}
+                                    disabled={disabled}
+                                    arrayIndex={arrayIndex}
+                                    parentParamForArray={parentParamForArray}
+                                />
+                            </>
+                        )}
                     </Box>
                 </>
             )}
@@ -905,6 +1533,13 @@ const NodeInputHandler = ({
                 onConfirm={(newValue, inputParamName) => onExpandDialogSave(newValue, inputParamName)}
                 onInputHintDialogClicked={onInputHintDialogClicked}
             ></ExpandTextDialog>
+            <ExpandRichInputDialog
+                show={showExpandRichDialog}
+                dialogProps={expandRichDialogProps}
+                onCancel={() => setShowExpandRichDialog(false)}
+                onConfirm={(newValue, inputParamName) => onExpandRichDialogSave(newValue, inputParamName)}
+                onInputHintDialogClicked={onInputHintDialogClicked}
+            ></ExpandRichInputDialog>
             <ConditionDialog
                 show={showConditionDialog}
                 dialogProps={conditionDialogProps}
@@ -924,6 +1559,105 @@ const NodeInputHandler = ({
                 onClose={() => setIsNvidiaNIMDialogOpen(false)}
                 onComplete={handleNvidiaNIMDialogComplete}
             ></NvidiaNIMDialog>
+            <Dialog
+                open={modelSelectionDialogOpen}
+                onClose={() => {
+                    setModelSelectionDialogOpen(false)
+                    setSelectedTempChatModel({})
+                }}
+                aria-labelledby='model-selection-dialog-title'
+                maxWidth='sm'
+                fullWidth
+            >
+                <DialogTitle id='model-selection-dialog-title'>Select Model</DialogTitle>
+                <DialogContent>
+                    <Box sx={{ mt: 2 }}>
+                        <Box sx={{ px: 2 }}>
+                            <Dropdown
+                                name={'chatModel'}
+                                options={availableChatModelsOptions ?? []}
+                                onSelect={(newValue) => {
+                                    if (!newValue) {
+                                        setSelectedTempChatModel({})
+                                    } else {
+                                        const foundChatComponent = availableChatModels.find((chatModel) => chatModel.name === newValue)
+                                        if (foundChatComponent) {
+                                            const chatModelId = `${foundChatComponent.name}_0`
+                                            const clonedComponent = cloneDeep(foundChatComponent)
+                                            const initChatModelData = initNode(clonedComponent, chatModelId)
+                                            setSelectedTempChatModel(initChatModelData)
+                                        }
+                                    }
+                                }}
+                                value={selectedTempChatModel?.name ?? 'choose an option'}
+                            />
+                        </Box>
+                        {selectedTempChatModel && Object.keys(selectedTempChatModel).length > 0 && (
+                            <Box sx={{ mt: 2 }}>
+                                {(selectedTempChatModel.inputParams ?? [])
+                                    .filter((inputParam) => !inputParam.hidden)
+                                    .map((inputParam, index) => (
+                                        <DocStoreInputHandler key={index} inputParam={inputParam} data={selectedTempChatModel} />
+                                    ))}
+                            </Box>
+                        )}
+                    </Box>
+                </DialogContent>
+                <DialogActions>
+                    <Button
+                        onClick={() => {
+                            setModelSelectionDialogOpen(false)
+                            setSelectedTempChatModel({})
+                        }}
+                    >
+                        Cancel
+                    </Button>
+                    <Button
+                        disabled={!selectedTempChatModel || Object.keys(selectedTempChatModel).length === 0}
+                        onClick={async () => {
+                            setModelSelectionDialogOpen(false)
+                            if (modelSelectionCallback) {
+                                await modelSelectionCallback(selectedTempChatModel)
+                            }
+                            setSelectedTempChatModel({})
+                        }}
+                        variant='contained'
+                    >
+                        Confirm
+                    </Button>
+                </DialogActions>
+            </Dialog>
+            <PromptGeneratorDialog
+                show={promptGeneratorDialogOpen}
+                dialogProps={promptGeneratorDialogProps}
+                onCancel={() => setPromptGeneratorDialogOpen(false)}
+                onConfirm={(generatedInstruction) => {
+                    try {
+                        if (inputParam?.acceptVariable && window.location.href.includes('v2/agentcanvas')) {
+                            const htmlContent = markdownConverter.makeHtml(generatedInstruction)
+                            data.inputs[inputParam.name] = htmlContent
+                        } else {
+                            data.inputs[inputParam.name] = generatedInstruction
+                        }
+                        setPromptGeneratorDialogOpen(false)
+                    } catch (error) {
+                        enqueueSnackbar({
+                            message: 'Error setting generated instruction',
+                            options: {
+                                key: new Date().getTime() + Math.random(),
+                                variant: 'error',
+                                persist: true,
+                                action: (key) => (
+                                    <Button style={{ color: 'white' }} onClick={() => closeSnackbar(key)}>
+                                        <IconX />
+                                    </Button>
+                                )
+                            }
+                        })
+                    }
+                }}
+            />
+            {loading && <BackdropLoader open={loading} />}
         </div>
     )
 }
@@ -935,6 +1669,9 @@ NodeInputHandler.propTypes = {
     disabled: PropTypes.bool,
     isAdditionalParams: PropTypes.bool,
     disablePadding: PropTypes.bool,
+    parentParamForArray: PropTypes.object,
+    arrayIndex: PropTypes.number,
+    onCustomDataChange: PropTypes.func,
     onHideNodeInfoDialog: PropTypes.func
 }
 

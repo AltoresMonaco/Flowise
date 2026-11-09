@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { enqueueSnackbar as enqueueSnackbarAction, closeSnackbar as closeSnackbarAction, SET_CHATFLOW } from '@/store/actions'
 import PropTypes from 'prop-types'
 
-import { Typography, Button, OutlinedInput, Stack } from '@mui/material'
+import { Typography, Button, OutlinedInput, Stack, Box } from '@mui/material'
 
 // Project import
 import { StyledButton } from '@/ui-component/button/StyledButton'
@@ -19,7 +19,7 @@ import chatflowsApi from '@/api/chatflows'
 // utils
 import useNotifier from '@/utils/useNotifier'
 
-const RateLimit = () => {
+const RateLimit = ({ dialogProps, hideTitle = false }) => {
     const dispatch = useDispatch()
     const chatflow = useSelector((state) => state.canvas.chatflow)
     const chatflowid = chatflow.id
@@ -36,9 +36,11 @@ const RateLimit = () => {
     const [limitMsg, setLimitMsg] = useState(apiConfig?.rateLimit?.limitMsg ?? '')
 
     const formatObj = () => {
-        const obj = {
-            rateLimit: { status: rateLimitStatus }
+        let apiConfig = JSON.parse(dialogProps.chatflow.apiConfig)
+        if (apiConfig === null || apiConfig === undefined) {
+            apiConfig = {}
         }
+        let obj = { status: rateLimitStatus }
 
         if (rateLimitStatus) {
             const rateLimitValuesBoolean = [!limitMax, !limitDuration, !limitMsg]
@@ -46,16 +48,16 @@ const RateLimit = () => {
             if (rateLimitFilledValues.length >= 1 && rateLimitFilledValues.length <= 2) {
                 throw new Error('Need to fill all rate limit input fields')
             } else if (rateLimitFilledValues.length === 3) {
-                obj.rateLimit = {
-                    ...obj.rateLimit,
+                obj = {
+                    ...obj,
                     limitMax,
                     limitDuration,
                     limitMsg
                 }
             }
         }
-
-        return obj
+        apiConfig.rateLimit = obj
+        return apiConfig
     }
 
     const handleChange = (value) => {
@@ -145,35 +147,39 @@ const RateLimit = () => {
     }
 
     return (
-        <Stack direction='column' spacing={2} sx={{ alignItems: 'start' }}>
-            <Typography variant='h3'>
-                Rate Limit{' '}
-                <TooltipWithParser
-                    style={{ marginLeft: 10 }}
-                    title={
-                        'Visit <a target="_blank" href="https://docs.flowiseai.com/configuration/rate-limit">Rate Limit Setup Guide</a> to set up Rate Limit correctly in your hosting environment.'
-                    }
-                />
-            </Typography>
-            <Stack direction='column' spacing={2} sx={{ width: '100%' }}>
-                <SwitchInput label='Enable Rate Limit' onChange={handleChange} value={rateLimitStatus} />
-                {rateLimitStatus && (
-                    <Stack direction='column' spacing={2} sx={{ width: '100%' }}>
-                        {textField(limitMax, 'limitMax', 'Message Limit per Duration', 'number', '5')}
-                        {textField(limitDuration, 'limitDuration', 'Duration in Second', 'number', '60')}
-                        {textField(limitMsg, 'limitMsg', 'Limit Message', 'string', 'You have reached the quota')}
-                    </Stack>
-                )}
-            </Stack>
-            <StyledButton disabled={checkDisabled()} variant='contained' onClick={() => onSave()} sx={{ width: 'auto' }}>
-                Save
-            </StyledButton>
+        <Stack direction='column' spacing={2} sx={{ width: '100%' }}>
+            {!hideTitle && (
+                <Typography variant='h3'>
+                    Rate Limit{' '}
+                    <TooltipWithParser
+                        style={{ marginLeft: 10 }}
+                        title={
+                            'Visit <a target="_blank" href="https://docs.flowiseai.com/configuration/rate-limit">Rate Limit Setup Guide</a> to set up Rate Limit correctly in your hosting environment.'
+                        }
+                    />
+                </Typography>
+            )}
+            <SwitchInput label='Enable Rate Limit' onChange={handleChange} value={rateLimitStatus} />
+            {rateLimitStatus && (
+                <Stack direction='column' spacing={2} sx={{ width: '100%' }}>
+                    {textField(limitMax, 'limitMax', 'Message Limit per Duration', 'number', '5')}
+                    {textField(limitDuration, 'limitDuration', 'Duration in Second', 'number', '60')}
+                    {textField(limitMsg, 'limitMsg', 'Limit Message', 'string', 'You have reached the quota')}
+                </Stack>
+            )}
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', width: '100%', mt: 2 }}>
+                <StyledButton disabled={checkDisabled()} variant='contained' onClick={() => onSave()} sx={{ minWidth: 100 }}>
+                    Save
+                </StyledButton>
+            </Box>
         </Stack>
     )
 }
 
 RateLimit.propTypes = {
-    isSessionMemory: PropTypes.bool
+    isSessionMemory: PropTypes.bool,
+    dialogProps: PropTypes.object,
+    hideTitle: PropTypes.bool
 }
 
 export default RateLimit

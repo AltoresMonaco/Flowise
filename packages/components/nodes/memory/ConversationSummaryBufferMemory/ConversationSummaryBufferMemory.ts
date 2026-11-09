@@ -11,7 +11,7 @@ import {
 import { getBaseClasses, mapChatMessageToBaseMessage } from '../../../src/utils'
 import { BaseLanguageModel } from '@langchain/core/language_models/base'
 import { BaseMessage, getBufferString, HumanMessage } from '@langchain/core/messages'
-import { ConversationSummaryBufferMemory, ConversationSummaryBufferMemoryInput } from 'langchain/memory'
+import { ConversationSummaryBufferMemory, ConversationSummaryBufferMemoryInput } from '@langchain/classic/memory'
 import { DataSource } from 'typeorm'
 import { ChatAnthropic } from '../../chatmodels/ChatAnthropic/FlowiseChatAnthropic'
 
@@ -78,6 +78,7 @@ class ConversationSummaryBufferMemory_Memory implements INode {
         const appDataSource = options.appDataSource as DataSource
         const databaseEntities = options.databaseEntities as IDatabaseEntity
         const chatflowid = options.chatflowid as string
+        const orgId = options.orgId as string
 
         const obj: ConversationSummaryBufferMemoryInput & BufferMemoryExtendedInput = {
             llm: model,
@@ -87,7 +88,8 @@ class ConversationSummaryBufferMemory_Memory implements INode {
             returnMessages: true,
             appDataSource,
             databaseEntities,
-            chatflowid
+            chatflowid,
+            orgId
         }
 
         return new ConversationSummaryBufferMemoryExtended(obj)
@@ -99,12 +101,14 @@ interface BufferMemoryExtendedInput {
     appDataSource: DataSource
     databaseEntities: IDatabaseEntity
     chatflowid: string
+    orgId: string
 }
 
 class ConversationSummaryBufferMemoryExtended extends FlowiseSummaryBufferMemory implements MemoryMethods {
     appDataSource: DataSource
     databaseEntities: IDatabaseEntity
     chatflowid: string
+    orgId: string
     sessionId = ''
 
     constructor(fields: ConversationSummaryBufferMemoryInput & BufferMemoryExtendedInput) {
@@ -113,6 +117,7 @@ class ConversationSummaryBufferMemoryExtended extends FlowiseSummaryBufferMemory
         this.appDataSource = fields.appDataSource
         this.databaseEntities = fields.databaseEntities
         this.chatflowid = fields.chatflowid
+        this.orgId = fields.orgId
     }
 
     async getChatMessages(
@@ -137,7 +142,7 @@ class ConversationSummaryBufferMemoryExtended extends FlowiseSummaryBufferMemory
             chatMessage.unshift(...prependMessages)
         }
 
-        let baseMessages = await mapChatMessageToBaseMessage(chatMessage)
+        let baseMessages = await mapChatMessageToBaseMessage(chatMessage, this.orgId)
 
         // Prune baseMessages if it exceeds max token limit
         if (this.movingSummaryBuffer) {

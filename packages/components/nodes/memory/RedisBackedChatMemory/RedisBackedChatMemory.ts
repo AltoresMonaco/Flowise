@@ -1,5 +1,5 @@
 import { Redis, RedisOptions } from 'ioredis'
-import { BufferMemory, BufferMemoryInput } from 'langchain/memory'
+import { BufferMemory, BufferMemoryInput } from '@langchain/classic/memory'
 import { mapStoredMessageToChatMessage, BaseMessage, AIMessage, HumanMessage } from '@langchain/core/messages'
 import { INode, INodeData, INodeParams, ICommonObject, MessageType, IMessage, MemoryMethods, FlowiseMemory } from '../../../src/Interface'
 import {
@@ -88,6 +88,7 @@ const initializeRedis = async (nodeData: INodeData, options: ICommonObject): Pro
 
     const credentialData = await getCredentialData(nodeData.credential ?? '', options)
     const redisUrl = getCredentialParam('redisUrl', credentialData, nodeData)
+    const orgId = options.orgId as string
 
     const redisOptions = redisUrl
         ? redisUrl
@@ -104,7 +105,8 @@ const initializeRedis = async (nodeData: INodeData, options: ICommonObject): Pro
         sessionId,
         windowSize,
         sessionTTL,
-        redisOptions
+        redisOptions,
+        orgId
     })
 
     return memory
@@ -114,11 +116,13 @@ interface BufferMemoryExtendedInput {
     sessionId: string
     windowSize?: number
     sessionTTL?: number
+    orgId: string
     redisOptions: RedisOptions | string
 }
 
 class BufferMemoryExtended extends FlowiseMemory implements MemoryMethods {
     sessionId = ''
+    orgId = ''
     windowSize?: number
     sessionTTL?: number
     redisOptions: RedisOptions | string
@@ -128,11 +132,26 @@ class BufferMemoryExtended extends FlowiseMemory implements MemoryMethods {
         this.sessionId = fields.sessionId
         this.windowSize = fields.windowSize
         this.sessionTTL = fields.sessionTTL
+        this.orgId = fields.orgId
         this.redisOptions = fields.redisOptions
     }
 
     private async withRedisClient<T>(fn: (client: Redis) => Promise<T>): Promise<T> {
-        const client = typeof this.redisOptions === 'string' ? new Redis(this.redisOptions) : new Redis(this.redisOptions)
+        const client =
+            typeof this.redisOptions === 'string'
+                ? new Redis(this.redisOptions, {
+                      keepAlive:
+                          process.env.REDIS_KEEP_ALIVE && !isNaN(parseInt(process.env.REDIS_KEEP_ALIVE, 10))
+                              ? parseInt(process.env.REDIS_KEEP_ALIVE, 10)
+                              : undefined
+                  })
+                : new Redis({
+                      ...this.redisOptions,
+                      keepAlive:
+                          process.env.REDIS_KEEP_ALIVE && !isNaN(parseInt(process.env.REDIS_KEEP_ALIVE, 10))
+                              ? parseInt(process.env.REDIS_KEEP_ALIVE, 10)
+                              : undefined
+                  })
         try {
             return await fn(client)
         } finally {
@@ -149,9 +168,9 @@ class BufferMemoryExtended extends FlowiseMemory implements MemoryMethods {
             const id = overrideSessionId ? overrideSessionId : this.sessionId
             const rawStoredMessages = await client.lrange(id, this.windowSize ? this.windowSize * -1 : 0, -1)
             const orderedMessages = rawStoredMessages.reverse().map((message) => JSON.parse(message))
-            const baseMessages = orderedMessages.map(mapStoredMessageToChatMessage)
+            const baseMessages: BaseMessage[] = orderedMessages.map(mapStoredMessageToChatMessage)
             if (prependMessages?.length) {
-                baseMessages.unshift(...(await mapChatMessageToBaseMessage(prependMessages)))
+                baseMessages.unshift(...(await mapChatMessageToBaseMessage(prependMessages, this.orgId)))
             }
             return returnBaseMessages ? baseMessages : convertBaseMessagetoIMessage(baseMessages)
         })

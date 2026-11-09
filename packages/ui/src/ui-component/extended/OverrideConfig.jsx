@@ -5,6 +5,7 @@ import {
     Accordion,
     AccordionDetails,
     AccordionSummary,
+    Box,
     Button,
     Paper,
     Stack,
@@ -17,7 +18,6 @@ import {
     Typography,
     Card
 } from '@mui/material'
-import { useTheme } from '@mui/material/styles'
 
 // Project import
 import { StyledButton } from '@/ui-component/button/StyledButton'
@@ -39,17 +39,82 @@ import variablesApi from '@/api/variables'
 // utils
 
 const OverrideConfigTable = ({ columns, onToggle, rows, sx }) => {
+    const customization = useSelector((state) => state.customization)
+    const isDark = customization?.isDarkMode
+
     const handleChange = (enabled, row) => {
         onToggle(row, enabled)
     }
 
+    const renderCellContent = (key, row) => {
+        if (key === 'enabled') {
+            return <SwitchInput onChange={(enabled) => handleChange(enabled, row)} value={row.enabled} />
+        } else if (key === 'type' && row.schema) {
+            let schemaContent
+            if (Array.isArray(row.schema)) {
+                schemaContent =
+                    '[<br>' +
+                    row.schema
+                        .map(
+                            (item) =>
+                                `&nbsp;&nbsp;${JSON.stringify(
+                                    {
+                                        [item.name]: item.type
+                                    },
+                                    null,
+                                    2
+                                )}`
+                        )
+                        .join(',<br>') +
+                    '<br>]'
+            } else if (typeof row.schema === 'object' && row.schema !== null) {
+                schemaContent = JSON.stringify(row.schema, null, 2).replace(/\n/g, '<br>').replace(/ /g, '&nbsp;')
+            } else {
+                schemaContent = 'No schema available'
+            }
+
+            return (
+                <Stack direction='row' alignItems='center' spacing={0.5}>
+                    <Typography sx={{ fontSize: '0.8rem' }}>{row[key]}</Typography>
+                    <TooltipWithParser title={`<div>Schema:<br/>${schemaContent}</div>`} />
+                </Stack>
+            )
+        } else {
+            return <Typography sx={{ fontSize: '0.8rem', wordBreak: 'break-all' }}>{row[key]}</Typography>
+        }
+    }
+
+    const columnLabels = { label: 'Label', name: 'Name', type: 'Type', enabled: 'On' }
+
     return (
-        <TableContainer component={Paper}>
-            <Table size='small' sx={{ minWidth: 650, ...sx }} aria-label='simple table'>
+        <TableContainer
+            component={Paper}
+            elevation={0}
+            sx={{
+                borderRadius: 0,
+                boxShadow: 'none',
+                bgcolor: 'transparent'
+            }}
+        >
+            <Table size='small' sx={{ ...sx }} aria-label='override config table'>
                 <TableHead>
                     <TableRow>
                         {columns.map((col, index) => (
-                            <TableCell key={index}>{col.charAt(0).toUpperCase() + col.slice(1)}</TableCell>
+                            <TableCell
+                                key={index}
+                                sx={{
+                                    fontSize: '0.8125rem',
+                                    fontWeight: 600,
+                                    color: 'text.secondary',
+                                    py: 1.5,
+                                    borderBottom: '1px solid',
+                                    borderColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)',
+                                    ...(col === 'enabled' ? { width: 50, textAlign: 'center' } : {}),
+                                    ...(col === 'type' ? { width: 100 } : {})
+                                }}
+                            >
+                                {columnLabels[col] || col.charAt(0).toUpperCase() + col.slice(1)}
+                            </TableCell>
                         ))}
                     </TableRow>
                 </TableHead>
@@ -57,14 +122,18 @@ const OverrideConfigTable = ({ columns, onToggle, rows, sx }) => {
                     {rows.map((row, index) => (
                         <TableRow key={index} sx={{ '&:last-child td, &:last-child th': { border: 0 } }}>
                             {Object.keys(row).map((key, index) => {
-                                if (key !== 'id') {
+                                if (key !== 'id' && key !== 'schema') {
                                     return (
-                                        <TableCell key={index}>
-                                            {key === 'enabled' ? (
-                                                <SwitchInput onChange={(enabled) => handleChange(enabled, row)} value={row.enabled} />
-                                            ) : (
-                                                row[key]
-                                            )}
+                                        <TableCell
+                                            key={index}
+                                            sx={{
+                                                py: 1.5,
+                                                borderBottom: '1px solid',
+                                                borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)',
+                                                ...(key === 'enabled' ? { textAlign: 'center' } : {})
+                                            }}
+                                        >
+                                            {renderCellContent(key, row)}
                                         </TableCell>
                                     )
                                 }
@@ -84,14 +153,14 @@ OverrideConfigTable.propTypes = {
     onToggle: PropTypes.func
 }
 
-const OverrideConfig = ({ dialogProps }) => {
+const OverrideConfig = ({ dialogProps, hideTitle = false }) => {
     const dispatch = useDispatch()
+    const customization = useSelector((state) => state.customization)
     const chatflow = useSelector((state) => state.canvas.chatflow)
     const chatflowid = chatflow.id
     const apiConfig = chatflow.apiConfig ? JSON.parse(chatflow.apiConfig) : {}
 
     useNotifier()
-    const theme = useTheme()
 
     const enqueueSnackbar = (...args) => dispatch(enqueueSnackbarAction(...args))
     const closeSnackbar = (...args) => dispatch(closeSnackbarAction(...args))
@@ -116,25 +185,27 @@ const OverrideConfig = ({ dialogProps }) => {
     }
 
     const formatObj = () => {
-        const obj = {
-            overrideConfig: { status: overrideConfigStatus }
+        let apiConfig = JSON.parse(dialogProps.chatflow.apiConfig)
+        if (apiConfig === null || apiConfig === undefined) {
+            apiConfig = {}
         }
 
+        let overrideConfig = { status: overrideConfigStatus }
         if (overrideConfigStatus) {
-            // loop through each key in nodeOverrides and filter out the enabled ones
             const filteredNodeOverrides = {}
             for (const key in nodeOverrides) {
                 filteredNodeOverrides[key] = nodeOverrides[key].filter((node) => node.enabled)
             }
 
-            obj.overrideConfig = {
-                ...obj.overrideConfig,
+            overrideConfig = {
+                ...overrideConfig,
                 nodes: filteredNodeOverrides,
                 variables: variableOverrides.filter((node) => node.enabled)
             }
         }
+        apiConfig.overrideConfig = overrideConfig
 
-        return obj
+        return apiConfig
     }
 
     const onNodeOverrideToggle = (node, property, status) => {
@@ -167,7 +238,7 @@ const OverrideConfig = ({ dialogProps }) => {
         const seenNodes = new Set()
 
         nodes.forEach((item) => {
-            const { node, nodeId, label, name, type } = item
+            const { node, nodeId, label, name, type, schema } = item
             seenNodes.add(node)
 
             if (!result[node]) {
@@ -184,7 +255,7 @@ const OverrideConfig = ({ dialogProps }) => {
 
             if (!result[node].nodeIds.includes(nodeId)) result[node].nodeIds.push(nodeId)
 
-            const param = { label, name, type }
+            const param = { label, name, type, schema }
 
             if (!result[node].params.some((existingParam) => JSON.stringify(existingParam) === JSON.stringify(param))) {
                 result[node].params.push(param)
@@ -206,7 +277,7 @@ const OverrideConfig = ({ dialogProps }) => {
         if (!overrideConfigStatus) {
             setNodeOverrides(newNodeOverrides)
         } else {
-            const updatedNodeOverrides = { ...nodeOverrides }
+            const updatedNodeOverrides = { ...newNodeOverrides }
 
             Object.keys(updatedNodeOverrides).forEach((node) => {
                 if (!seenNodes.has(node)) {
@@ -324,22 +395,32 @@ const OverrideConfig = ({ dialogProps }) => {
     }, [getAllVariablesApi.data])
 
     return (
-        <Stack direction='column' spacing={2} sx={{ alignItems: 'start' }}>
-            <Typography variant='h3'>
-                Override Configuration
-                <TooltipWithParser
-                    style={{ mb: 1, mt: 2, marginLeft: 10 }}
-                    title={
-                        'Enable or disable which properties of the flow configuration can be overridden. Refer to the <a href="https://docs.flowiseai.com/using-flowise/api#override-config" target="_blank">documentation</a> for more information.'
-                    }
-                />
-            </Typography>
+        <Stack direction='column' spacing={2} sx={{ width: '100%' }}>
+            {!hideTitle && (
+                <Typography variant='h3'>
+                    Override Configuration
+                    <TooltipWithParser
+                        style={{ mb: 1, mt: 2, marginLeft: 10 }}
+                        title={
+                            'Enable or disable which properties of the flow configuration can be overridden. Refer to the <a href="https://docs.flowiseai.com/using-flowise/prediction#configuration-override" target="_blank">documentation</a> for more information.'
+                        }
+                    />
+                </Typography>
+            )}
             <Stack direction='column' spacing={2} sx={{ width: '100%' }}>
                 <SwitchInput label='Enable Override Configuration' onChange={setOverrideConfigStatus} value={overrideConfigStatus} />
                 {overrideConfigStatus && (
                     <>
                         {nodeOverrides && nodeConfig && (
-                            <Card sx={{ borderColor: theme.palette.primary[200] + 75, p: 2 }} variant='outlined'>
+                            <Card
+                                elevation={0}
+                                sx={{
+                                    borderRadius: '8px',
+                                    border: '1px solid',
+                                    borderColor: customization.isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)',
+                                    p: 2
+                                }}
+                            >
                                 <Stack sx={{ mt: 1, mb: 2, ml: 1, alignItems: 'center' }} direction='row' spacing={2}>
                                     <IconBox />
                                     <Typography variant='h4'>Nodes</Typography>
@@ -353,6 +434,11 @@ const OverrideConfig = ({ dialogProps }) => {
                                                 onChange={handleAccordionChange(nodeLabel)}
                                                 key={nodeLabel}
                                                 disableGutters
+                                                sx={{
+                                                    '&:before': {
+                                                        bgcolor: customization.isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)'
+                                                    }
+                                                }}
                                             >
                                                 <AccordionSummary
                                                     expandIcon={<ExpandMoreIcon />}
@@ -393,7 +479,9 @@ const OverrideConfig = ({ dialogProps }) => {
                                                         rows={nodeOverrides[nodeLabel]}
                                                         columns={
                                                             nodeOverrides[nodeLabel].length > 0
-                                                                ? Object.keys(nodeOverrides[nodeLabel][0])
+                                                                ? Object.keys(nodeOverrides[nodeLabel][0]).filter(
+                                                                      (key) => key !== 'schema' && key !== 'id'
+                                                                  )
                                                                 : []
                                                         }
                                                         onToggle={(property, status) =>
@@ -407,7 +495,15 @@ const OverrideConfig = ({ dialogProps }) => {
                             </Card>
                         )}
                         {variableOverrides && variableOverrides.length > 0 && (
-                            <Card sx={{ borderColor: theme.palette.primary[200] + 75, p: 2 }} variant='outlined'>
+                            <Card
+                                elevation={0}
+                                sx={{
+                                    borderRadius: '8px',
+                                    border: '1px solid',
+                                    borderColor: customization.isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)',
+                                    p: 2
+                                }}
+                            >
                                 <Stack sx={{ mt: 1, mb: 2, ml: 1, alignItems: 'center' }} direction='row' spacing={2}>
                                     <IconVariable />
                                     <Typography variant='h4'>Variables</Typography>
@@ -422,15 +518,18 @@ const OverrideConfig = ({ dialogProps }) => {
                     </>
                 )}
             </Stack>
-            <StyledButton variant='contained' onClick={onOverrideConfigSave}>
-                Save
-            </StyledButton>
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', width: '100%', mt: 2 }}>
+                <StyledButton variant='contained' onClick={onOverrideConfigSave} sx={{ minWidth: 100 }}>
+                    Save
+                </StyledButton>
+            </Box>
         </Stack>
     )
 }
 
 OverrideConfig.propTypes = {
-    dialogProps: PropTypes.object
+    dialogProps: PropTypes.object,
+    hideTitle: PropTypes.bool
 }
 
 export default OverrideConfig

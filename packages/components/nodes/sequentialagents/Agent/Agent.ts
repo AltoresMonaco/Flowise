@@ -4,9 +4,8 @@ import { RunnableSequence, RunnablePassthrough, RunnableConfig } from '@langchai
 import { ChatPromptTemplate, MessagesPlaceholder, HumanMessagePromptTemplate, BaseMessagePromptTemplateLike } from '@langchain/core/prompts'
 import { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage } from '@langchain/core/messages'
-import { formatToOpenAIToolMessages } from 'langchain/agents/format_scratchpad/openai_tools'
-import { type ToolsAgentStep } from 'langchain/agents/openai/output_parser'
-import { StringOutputParser } from '@langchain/core/output_parsers'
+import { formatToOpenAIToolMessages } from '@langchain/classic/agents/format_scratchpad/openai_tools'
+import { type ToolsAgentStep } from '@langchain/classic/agents/openai/output_parser'
 import {
     INode,
     INodeData,
@@ -22,7 +21,13 @@ import {
     IStateWithMessages,
     ConversationHistorySelection
 } from '../../../src/Interface'
-import { ToolCallingAgentOutputParser, AgentExecutor, SOURCE_DOCUMENTS_PREFIX, ARTIFACTS_PREFIX } from '../../../src/agents'
+import {
+    ToolCallingAgentOutputParser,
+    AgentExecutor,
+    SOURCE_DOCUMENTS_PREFIX,
+    ARTIFACTS_PREFIX,
+    TOOL_ARGS_PREFIX
+} from '../../../src/agents'
 import {
     extractOutputFromArray,
     getInputVariables,
@@ -30,11 +35,13 @@ import {
     handleEscapeCharacters,
     prepareSandboxVars,
     removeInvalidImageMarkdown,
-    transformBracesWithColon
+    transformBracesWithColon,
+    executeJavaScriptCode,
+    createCodeExecutionSandbox,
+    createTextOnlyOutputParser
 } from '../../../src/utils'
 import {
     customGet,
-    getVM,
     processImageMessage,
     transformObjectPropertyToFunction,
     filterConversationHistory,
@@ -680,7 +687,7 @@ async function createAgent(
             sessionId: flowObj?.sessionId,
             chatId: flowObj?.chatId,
             input: flowObj?.input,
-            verbose: process.env.DEBUG === 'true',
+            verbose: process.env.DEBUG === 'true' ? true : false,
             maxIterations: maxIterations ? parseFloat(maxIterations) : undefined
         })
         return executor
@@ -735,7 +742,7 @@ async function createAgent(
         let conversationChain
 
         if (!agentInputVariablesValues || !Object.keys(agentInputVariablesValues).length) {
-            conversationChain = RunnableSequence.from([prompt, llm, new StringOutputParser()]).withConfig({
+            conversationChain = RunnableSequence.from([prompt, llm, createTextOnlyOutputParser()]).withConfig({
                 metadata: { sequentialNodeName: agentName }
             })
         } else {
@@ -743,7 +750,7 @@ async function createAgent(
                 RunnablePassthrough.assign(transformObjectPropertyToFunction(agentInputVariablesValues, state)),
                 prompt,
                 llm,
-                new StringOutputParser()
+                createTextOnlyOutputParser()
             ]).withConfig({
                 metadata: { sequentialNodeName: agentName }
             })
@@ -877,7 +884,7 @@ const getReturnOutput = async (nodeData: INodeData, input: string, options: ICom
     const updateStateMemory = nodeData.inputs?.updateStateMemory as string
 
     const selectedTab = tabIdentifier ? tabIdentifier.split(`_${nodeData.id}`)[0] : 'updateStateMemoryUI'
-    const variables = await getVars(appDataSource, databaseEntities, nodeData)
+    const variables = await getVars(appDataSource, databaseEntities, nodeData, options)
 
     const flow = {
         chatflowId: options.chatflowid,
@@ -930,9 +937,11 @@ const getReturnOutput = async (nodeData: INodeData, input: string, options: ICom
             throw new Error(e)
         }
     } else if (selectedTab === 'updateStateMemoryCode' && updateStateMemoryCode) {
-        const vm = await getVM(appDataSource, databaseEntities, nodeData, flow)
+        const sandbox = createCodeExecutionSandbox(input, variables, flow)
+
         try {
-            const response = await vm.run(`module.exports = async function() {${updateStateMemoryCode}}()`, __dirname)
+            const response = await executeJavaScriptCode(updateStateMemoryCode, sandbox)
+
             if (typeof response !== 'object') throw new Error('Return output must be an object')
             return response
         } catch (e) {
@@ -1041,6 +1050,17 @@ class ToolNode<T extends BaseMessage[] | MessagesState> extends RunnableCallable
                     }
                 }
 
+                let toolInput
+                if (typeof output === 'string' && output.includes(TOOL_ARGS_PREFIX)) {
+                    const outputArray = output.split(TOOL_ARGS_PREFIX)
+                    output = outputArray[0]
+                    try {
+                        toolInput = JSON.parse(outputArray[1])
+                    } catch (e) {
+                        console.error('Error parsing tool input from tool')
+                    }
+                }
+
                 return new ToolMessage({
                     name: tool.name,
                     content: typeof output === 'string' ? output : JSON.stringify(output),
@@ -1048,11 +1068,11 @@ class ToolNode<T extends BaseMessage[] | MessagesState> extends RunnableCallable
                     additional_kwargs: {
                         sourceDocuments,
                         artifacts,
-                        args: call.args,
+                        args: toolInput ?? call.args,
                         usedTools: [
                             {
                                 tool: tool.name ?? '',
-                                toolInput: call.args,
+                                toolInput: toolInput ?? call.args,
                                 toolOutput: output
                             }
                         ]

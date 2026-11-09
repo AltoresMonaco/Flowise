@@ -1,14 +1,18 @@
-import * as PropTypes from 'prop-types'
+import { closeSnackbar as closeSnackbarAction, enqueueSnackbar as enqueueSnackbarAction } from '@/store/actions'
 import moment from 'moment/moment'
-import { useEffect, useState } from 'react'
+import * as PropTypes from 'prop-types'
+import React, { useEffect, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import { enqueueSnackbar as enqueueSnackbarAction, closeSnackbar as closeSnackbarAction } from '@/store/actions'
 
 // material-ui
 import {
-    Button,
     Box,
+    Button,
     Chip,
+    Collapse,
+    IconButton,
+    Paper,
+    Popover,
     Skeleton,
     Stack,
     Table,
@@ -16,25 +20,24 @@ import {
     TableContainer,
     TableHead,
     TableRow,
-    Paper,
-    IconButton,
-    Popover,
-    Collapse,
     Typography
 } from '@mui/material'
 import TableCell, { tableCellClasses } from '@mui/material/TableCell'
-import { useTheme, styled } from '@mui/material/styles'
+import { styled, useTheme } from '@mui/material/styles'
 
 // project imports
-import MainCard from '@/ui-component/cards/MainCard'
-import { StyledButton } from '@/ui-component/button/StyledButton'
-import APIKeyDialog from './APIKeyDialog'
-import ConfirmDialog from '@/ui-component/dialog/ConfirmDialog'
-import ViewHeader from '@/layout/MainLayout/ViewHeader'
 import ErrorBoundary from '@/ErrorBoundary'
+import ViewHeader from '@/layout/MainLayout/ViewHeader'
+import { StyledPermissionButton } from '@/ui-component/button/RBACButtons'
+import MainCard from '@/ui-component/cards/MainCard'
+import ConfirmDialog from '@/ui-component/dialog/ConfirmDialog'
+import TablePagination, { DEFAULT_ITEMS_PER_PAGE } from '@/ui-component/pagination/TablePagination'
+import { Available } from '@/ui-component/rbac/available'
+import APIKeyDialog from './APIKeyDialog'
 
 // API
 import apiKeyApi from '@/api/apikey'
+import { useError } from '@/store/context/ErrorContext'
 
 // Hooks
 import useApi from '@/hooks/useApi'
@@ -44,20 +47,8 @@ import useConfirm from '@/hooks/useConfirm'
 import useNotifier from '@/utils/useNotifier'
 
 // Icons
-import {
-    IconTrash,
-    IconEdit,
-    IconCopy,
-    IconChevronsUp,
-    IconChevronsDown,
-    IconX,
-    IconPlus,
-    IconEye,
-    IconEyeOff,
-    IconFileUpload
-} from '@tabler/icons-react'
 import APIEmptySVG from '@/assets/images/api_empty.svg'
-import UploadJSONFileDialog from '@/views/apikey/UploadJSONFileDialog'
+import { IconChevronsDown, IconChevronsUp, IconCopy, IconEdit, IconEye, IconEyeOff, IconPlus, IconTrash, IconX } from '@tabler/icons-react'
 
 // ==============================|| APIKey ||============================== //
 
@@ -85,13 +76,15 @@ function APIKeyRow(props) {
     const [open, setOpen] = useState(false)
     const theme = useTheme()
 
+    const permissions = props.apiKey.permissions || []
+
     return (
         <>
             <TableRow sx={{ '&:last-child td, &:last-child th': { border: 0 } }}>
                 <StyledTableCell scope='row' style={{ width: '15%' }}>
                     {props.apiKey.keyName}
                 </StyledTableCell>
-                <StyledTableCell style={{ width: '40%' }}>
+                <StyledTableCell style={{ width: '25%' }}>
                     {props.showApiKeys.includes(props.apiKey.apiKey)
                         ? props.apiKey.apiKey
                         : `${props.apiKey.apiKey.substring(0, 2)}${'•'.repeat(18)}${props.apiKey.apiKey.substring(
@@ -121,6 +114,29 @@ function APIKeyRow(props) {
                         </Typography>
                     </Popover>
                 </StyledTableCell>
+                <StyledTableCell sx={{ width: '25%' }}>
+                    <Stack sx={{ flexDirection: 'row' }}>
+                        <Typography
+                            variant='subtitle2'
+                            color='textPrimary'
+                            sx={{
+                                width: '100%',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                display: '-webkit-box',
+                                WebkitLineClamp: '2',
+                                WebkitBoxOrient: 'vertical'
+                            }}
+                        >
+                            {permissions.map((d, key) => (
+                                <React.Fragment key={key}>
+                                    {d}
+                                    {', '}
+                                </React.Fragment>
+                            ))}
+                        </Typography>
+                    </Stack>
+                </StyledTableCell>
                 <StyledTableCell>
                     {props.apiKey.chatFlows.length}{' '}
                     {props.apiKey.chatFlows.length > 0 && (
@@ -130,20 +146,24 @@ function APIKeyRow(props) {
                     )}
                 </StyledTableCell>
                 <StyledTableCell>{moment(props.apiKey.createdAt).format('MMMM Do, YYYY')}</StyledTableCell>
-                <StyledTableCell>
-                    <IconButton title='Edit' color='primary' onClick={props.onEditClick}>
-                        <IconEdit />
-                    </IconButton>
-                </StyledTableCell>
-                <StyledTableCell>
-                    <IconButton title='Delete' color='error' onClick={props.onDeleteClick}>
-                        <IconTrash />
-                    </IconButton>
-                </StyledTableCell>
+                <Available permission={'apikeys:update,apikeys:create'}>
+                    <StyledTableCell>
+                        <IconButton title='Edit' color='primary' onClick={props.onEditClick}>
+                            <IconEdit />
+                        </IconButton>
+                    </StyledTableCell>
+                </Available>
+                <Available permission={'apikeys:delete'}>
+                    <StyledTableCell>
+                        <IconButton title='Delete' color='error' onClick={props.onDeleteClick}>
+                            <IconTrash />
+                        </IconButton>
+                    </StyledTableCell>
+                </Available>
             </TableRow>
             {open && (
                 <TableRow sx={{ '& td': { border: 0 } }}>
-                    <StyledTableCell sx={{ p: 2 }} colSpan={6}>
+                    <StyledTableCell sx={{ p: 2 }} colSpan={7}>
                         <Collapse in={open} timeout='auto' unmountOnExit>
                             <Box sx={{ borderRadius: 2, border: 1, borderColor: theme.palette.grey[900] + 25, overflow: 'hidden' }}>
                                 <Table aria-label='chatflow table'>
@@ -199,12 +219,12 @@ const APIKey = () => {
 
     const dispatch = useDispatch()
     useNotifier()
+    const { error, setError } = useError()
 
     const enqueueSnackbar = (...args) => dispatch(enqueueSnackbarAction(...args))
     const closeSnackbar = (...args) => dispatch(closeSnackbarAction(...args))
 
     const [isLoading, setLoading] = useState(true)
-    const [error, setError] = useState(null)
     const [showDialog, setShowDialog] = useState(false)
     const [dialogProps, setDialogProps] = useState({})
     const [apiKeys, setAPIKeys] = useState([])
@@ -212,10 +232,27 @@ const APIKey = () => {
     const [showApiKeys, setShowApiKeys] = useState([])
     const openPopOver = Boolean(anchorEl)
 
-    const [showUploadDialog, setShowUploadDialog] = useState(false)
-    const [uploadDialogProps, setUploadDialogProps] = useState({})
-
     const [search, setSearch] = useState('')
+
+    /* Table Pagination */
+    const [currentPage, setCurrentPage] = useState(1)
+    const [pageLimit, setPageLimit] = useState(DEFAULT_ITEMS_PER_PAGE)
+    const [total, setTotal] = useState(0)
+
+    const onChange = (page, pageLimit) => {
+        setCurrentPage(page)
+        setPageLimit(pageLimit)
+        refresh(page, pageLimit)
+    }
+
+    const refresh = (page, limit) => {
+        const params = {
+            page: page || currentPage,
+            limit: limit || pageLimit
+        }
+        getAllAPIKeysApi.request(params)
+    }
+
     const onSearchChange = (event) => {
         setSearch(event.target.value)
     }
@@ -267,17 +304,6 @@ const APIKey = () => {
         }
         setDialogProps(dialogProp)
         setShowDialog(true)
-    }
-
-    const uploadDialog = () => {
-        const dialogProp = {
-            type: 'ADD',
-            cancelButtonName: 'Cancel',
-            confirmButtonName: 'Upload',
-            data: {}
-        }
-        setUploadDialogProps(dialogProp)
-        setShowUploadDialog(true)
     }
 
     const deleteKey = async (key) => {
@@ -334,13 +360,11 @@ const APIKey = () => {
 
     const onConfirm = () => {
         setShowDialog(false)
-        setShowUploadDialog(false)
-        getAllAPIKeysApi.request()
+        refresh(currentPage, pageLimit)
     }
 
     useEffect(() => {
-        getAllAPIKeysApi.request()
-
+        refresh(currentPage, pageLimit)
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
@@ -350,15 +374,10 @@ const APIKey = () => {
 
     useEffect(() => {
         if (getAllAPIKeysApi.data) {
-            setAPIKeys(getAllAPIKeysApi.data)
+            setAPIKeys(getAllAPIKeysApi.data?.data)
+            setTotal(getAllAPIKeysApi.data?.total)
         }
     }, [getAllAPIKeysApi.data])
-
-    useEffect(() => {
-        if (getAllAPIKeysApi.error) {
-            setError(getAllAPIKeysApi.error)
-        }
-    }, [getAllAPIKeysApi.error])
 
     return (
         <>
@@ -367,17 +386,15 @@ const APIKey = () => {
                     <ErrorBoundary error={error} />
                 ) : (
                     <Stack flexDirection='column' sx={{ gap: 3 }}>
-                        <ViewHeader onSearchChange={onSearchChange} search={true} searchPlaceholder='Search API Keys' title='API Keys'>
-                            <Button
-                                variant='outlined'
-                                sx={{ borderRadius: 2, height: '100%' }}
-                                onClick={uploadDialog}
-                                startIcon={<IconFileUpload />}
-                                id='btn_importApiKeys'
-                            >
-                                Import
-                            </Button>
-                            <StyledButton
+                        <ViewHeader
+                            onSearchChange={onSearchChange}
+                            search={true}
+                            searchPlaceholder='Search API Keys'
+                            title='API Keys'
+                            description='Flowise API & SDK authentication keys'
+                        >
+                            <StyledPermissionButton
+                                permissionId={'apikeys:create'}
                                 variant='contained'
                                 sx={{ borderRadius: 2, height: '100%' }}
                                 onClick={addNew}
@@ -385,9 +402,9 @@ const APIKey = () => {
                                 id='btn_createApiKey'
                             >
                                 Create Key
-                            </StyledButton>
+                            </StyledPermissionButton>
                         </ViewHeader>
-                        {!isLoading && apiKeys.length <= 0 ? (
+                        {!isLoading && apiKeys?.length <= 0 ? (
                             <Stack sx={{ alignItems: 'center', justifyContent: 'center' }} flexDirection='column'>
                                 <Box sx={{ p: 2, height: 'auto' }}>
                                     <img
@@ -399,100 +416,115 @@ const APIKey = () => {
                                 <div>No API Keys Yet</div>
                             </Stack>
                         ) : (
-                            <TableContainer
-                                sx={{ border: 1, borderColor: theme.palette.grey[900] + 25, borderRadius: 2 }}
-                                component={Paper}
-                            >
-                                <Table sx={{ minWidth: 650 }} aria-label='simple table'>
-                                    <TableHead
-                                        sx={{
-                                            backgroundColor: customization.isDarkMode
-                                                ? theme.palette.common.black
-                                                : theme.palette.grey[100],
-                                            height: 56
-                                        }}
-                                    >
-                                        <TableRow>
-                                            <StyledTableCell>Key Name</StyledTableCell>
-                                            <StyledTableCell>API Key</StyledTableCell>
-                                            <StyledTableCell>Usage</StyledTableCell>
-                                            <StyledTableCell>Created</StyledTableCell>
-                                            <StyledTableCell> </StyledTableCell>
-                                            <StyledTableCell> </StyledTableCell>
-                                        </TableRow>
-                                    </TableHead>
-                                    <TableBody>
-                                        {isLoading ? (
-                                            <>
-                                                <StyledTableRow>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                </StyledTableRow>
-                                                <StyledTableRow>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                    <StyledTableCell>
-                                                        <Skeleton variant='text' />
-                                                    </StyledTableCell>
-                                                </StyledTableRow>
-                                            </>
-                                        ) : (
-                                            <>
-                                                {apiKeys.filter(filterKeys).map((key, index) => (
-                                                    <APIKeyRow
-                                                        key={index}
-                                                        apiKey={key}
-                                                        showApiKeys={showApiKeys}
-                                                        onCopyClick={(event) => {
-                                                            navigator.clipboard.writeText(key.apiKey)
-                                                            setAnchorEl(event.currentTarget)
-                                                            setTimeout(() => {
-                                                                handleClosePopOver()
-                                                            }, 1500)
-                                                        }}
-                                                        onShowAPIClick={() => onShowApiKeyClick(key.apiKey)}
-                                                        open={openPopOver}
-                                                        anchorEl={anchorEl}
-                                                        onClose={handleClosePopOver}
-                                                        theme={theme}
-                                                        onEditClick={() => edit(key)}
-                                                        onDeleteClick={() => deleteKey(key)}
-                                                    />
-                                                ))}
-                                            </>
-                                        )}
-                                    </TableBody>
-                                </Table>
-                            </TableContainer>
+                            <>
+                                <TableContainer
+                                    sx={{ border: 1, borderColor: theme.palette.grey[900] + 25, borderRadius: 2 }}
+                                    component={Paper}
+                                >
+                                    <Table sx={{ minWidth: 650 }} aria-label='simple table'>
+                                        <TableHead
+                                            sx={{
+                                                backgroundColor: customization.isDarkMode
+                                                    ? theme.palette.common.black
+                                                    : theme.palette.grey[100],
+                                                height: 56
+                                            }}
+                                        >
+                                            <TableRow>
+                                                <StyledTableCell>Key Name</StyledTableCell>
+                                                <StyledTableCell>API Key</StyledTableCell>
+                                                <StyledTableCell>Permissions</StyledTableCell>
+                                                <StyledTableCell>Usage</StyledTableCell>
+                                                <StyledTableCell>Updated</StyledTableCell>
+                                                <Available permission={'apikeys:update,apikeys:create'}>
+                                                    <StyledTableCell> </StyledTableCell>
+                                                </Available>
+                                                <Available permission={'apikeys:delete'}>
+                                                    <StyledTableCell> </StyledTableCell>
+                                                </Available>
+                                            </TableRow>
+                                        </TableHead>
+                                        <TableBody>
+                                            {isLoading ? (
+                                                <>
+                                                    <StyledTableRow>
+                                                        <StyledTableCell>
+                                                            <Skeleton variant='text' />
+                                                        </StyledTableCell>
+                                                        <StyledTableCell>
+                                                            <Skeleton variant='text' />
+                                                        </StyledTableCell>
+                                                        <StyledTableCell>
+                                                            <Skeleton variant='text' />
+                                                        </StyledTableCell>
+                                                        <StyledTableCell>
+                                                            <Skeleton variant='text' />
+                                                        </StyledTableCell>
+                                                        <StyledTableCell>
+                                                            <Skeleton variant='text' />
+                                                        </StyledTableCell>
+                                                        <Available permission={'apikeys:update,apikeys:create'}>
+                                                            <StyledTableCell> </StyledTableCell>
+                                                        </Available>
+                                                        <Available permission={'apikeys:delete'}>
+                                                            <StyledTableCell> </StyledTableCell>
+                                                        </Available>
+                                                    </StyledTableRow>
+                                                    <StyledTableRow>
+                                                        <StyledTableCell>
+                                                            <Skeleton variant='text' />
+                                                        </StyledTableCell>
+                                                        <StyledTableCell>
+                                                            <Skeleton variant='text' />
+                                                        </StyledTableCell>
+                                                        <StyledTableCell>
+                                                            <Skeleton variant='text' />
+                                                        </StyledTableCell>
+                                                        <StyledTableCell>
+                                                            <Skeleton variant='text' />
+                                                        </StyledTableCell>
+                                                        <StyledTableCell>
+                                                            <Skeleton variant='text' />
+                                                        </StyledTableCell>
+                                                        <Available permission={'apikeys:update,apikeys:create'}>
+                                                            <StyledTableCell> </StyledTableCell>
+                                                        </Available>
+                                                        <Available permission={'apikeys:delete'}>
+                                                            <StyledTableCell> </StyledTableCell>
+                                                        </Available>
+                                                    </StyledTableRow>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    {apiKeys?.filter(filterKeys).map((key, index) => (
+                                                        <APIKeyRow
+                                                            key={index}
+                                                            apiKey={key}
+                                                            showApiKeys={showApiKeys}
+                                                            onCopyClick={(event) => {
+                                                                navigator.clipboard.writeText(key.apiKey)
+                                                                setAnchorEl(event.currentTarget)
+                                                                setTimeout(() => {
+                                                                    handleClosePopOver()
+                                                                }, 1500)
+                                                            }}
+                                                            onShowAPIClick={() => onShowApiKeyClick(key.apiKey)}
+                                                            open={openPopOver}
+                                                            anchorEl={anchorEl}
+                                                            onClose={handleClosePopOver}
+                                                            theme={theme}
+                                                            onEditClick={() => edit(key)}
+                                                            onDeleteClick={() => deleteKey(key)}
+                                                        />
+                                                    ))}
+                                                </>
+                                            )}
+                                        </TableBody>
+                                    </Table>
+                                </TableContainer>
+                                {/* Pagination and Page Size Controls */}
+                                <TablePagination currentPage={currentPage} limit={pageLimit} total={total} onChange={onChange} />
+                            </>
                         )}
                     </Stack>
                 )}
@@ -504,14 +536,6 @@ const APIKey = () => {
                 onConfirm={onConfirm}
                 setError={setError}
             ></APIKeyDialog>
-            {showUploadDialog && (
-                <UploadJSONFileDialog
-                    show={showUploadDialog}
-                    dialogProps={uploadDialogProps}
-                    onCancel={() => setShowUploadDialog(false)}
-                    onConfirm={onConfirm}
-                ></UploadJSONFileDialog>
-            )}
             <ConfirmDialog />
         </>
     )

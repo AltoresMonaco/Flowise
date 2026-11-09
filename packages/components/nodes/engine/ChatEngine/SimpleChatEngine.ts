@@ -9,6 +9,7 @@ import {
     IServerSideEventStreamer
 } from '../../../src/Interface'
 import { LLM, ChatMessage, SimpleChatEngine } from 'llamaindex'
+import { EvaluationRunTracerLlama } from '../../../evaluation/EvaluationRunTracerLlama'
 
 class SimpleChatEngine_LlamaIndex implements INode {
     label: string
@@ -23,6 +24,8 @@ class SimpleChatEngine_LlamaIndex implements INode {
     inputs: INodeParams[]
     outputs: INodeOutputsValue[]
     sessionId?: string
+    badge: string
+    deprecateMessage: string
 
     constructor(fields?: { sessionId?: string }) {
         this.label = 'Simple Chat Engine'
@@ -34,6 +37,8 @@ class SimpleChatEngine_LlamaIndex implements INode {
         this.description = 'Simple engine to handle back and forth conversations'
         this.baseClasses = [this.type]
         this.tags = ['LlamaIndex']
+        this.badge = 'DEPRECATING'
+        this.deprecateMessage = 'LlamaIndex integration is deprecated and will be removed in a future release.'
         this.inputs = [
             {
                 label: 'Chat Model',
@@ -77,6 +82,9 @@ class SimpleChatEngine_LlamaIndex implements INode {
         }
 
         const chatEngine = new SimpleChatEngine({ llm: model })
+
+        // these are needed for evaluation runs
+        await EvaluationRunTracerLlama.injectEvaluationMetadata(nodeData, options, chatEngine)
 
         const msgs = (await memory.getChatMessages(this.sessionId, false, prependMessages)) as IMessage[]
         for (const message of msgs) {

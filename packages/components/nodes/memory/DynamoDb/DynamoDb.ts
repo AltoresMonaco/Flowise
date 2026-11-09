@@ -11,7 +11,7 @@ import {
 } from '@aws-sdk/client-dynamodb'
 import { DynamoDBChatMessageHistory } from '@langchain/community/stores/message/dynamodb'
 import { mapStoredMessageToChatMessage, AIMessage, HumanMessage, StoredMessage, BaseMessage } from '@langchain/core/messages'
-import { BufferMemory, BufferMemoryInput } from 'langchain/memory'
+import { BufferMemory, BufferMemoryInput } from '@langchain/classic/memory'
 import {
     convertBaseMessagetoIMessage,
     getBaseClasses,
@@ -125,6 +125,8 @@ const initializeDynamoDB = async (nodeData: INodeData, options: ICommonObject): 
         config
     })
 
+    const orgId = options.orgId as string
+
     const memory = new BufferMemoryExtended({
         memoryKey: memoryKey ?? 'chat_history',
         chatHistory: dynamoDb,
@@ -132,7 +134,8 @@ const initializeDynamoDB = async (nodeData: INodeData, options: ICommonObject): 
         dynamodbClient: client,
         tableName,
         partitionKey,
-        dynamoKey: { [partitionKey]: { S: sessionId } }
+        dynamoKey: { [partitionKey]: { S: sessionId } },
+        orgId
     })
     return memory
 }
@@ -143,6 +146,7 @@ interface BufferMemoryExtendedInput {
     tableName: string
     partitionKey: string
     dynamoKey: Record<string, AttributeValue>
+    orgId: string
 }
 
 interface DynamoDBSerializedChatMessage {
@@ -165,6 +169,7 @@ class BufferMemoryExtended extends FlowiseMemory implements MemoryMethods {
     private dynamoKey: Record<string, AttributeValue>
     private messageAttributeName: string
     sessionId = ''
+    orgId = ''
     dynamodbClient: DynamoDBClient
 
     constructor(fields: BufferMemoryInput & BufferMemoryExtendedInput) {
@@ -174,6 +179,7 @@ class BufferMemoryExtended extends FlowiseMemory implements MemoryMethods {
         this.tableName = fields.tableName
         this.partitionKey = fields.partitionKey
         this.dynamoKey = fields.dynamoKey
+        this.orgId = fields.orgId
     }
 
     overrideDynamoKey(overrideSessionId = '') {
@@ -258,9 +264,9 @@ class BufferMemoryExtended extends FlowiseMemory implements MemoryMethods {
                 }
             }))
             .filter((x): x is StoredMessage => x.type !== undefined && x.data.content !== undefined)
-        const baseMessages = messages.map(mapStoredMessageToChatMessage)
+        const baseMessages: BaseMessage[] = messages.map(mapStoredMessageToChatMessage)
         if (prependMessages?.length) {
-            baseMessages.unshift(...(await mapChatMessageToBaseMessage(prependMessages)))
+            baseMessages.unshift(...(await mapChatMessageToBaseMessage(prependMessages, this.orgId)))
         }
         return returnBaseMessages ? baseMessages : convertBaseMessagetoIMessage(baseMessages)
     }

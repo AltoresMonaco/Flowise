@@ -11,7 +11,7 @@ import {
 import { getBaseClasses, mapChatMessageToBaseMessage } from '../../../src/utils'
 import { BaseLanguageModel } from '@langchain/core/language_models/base'
 import { BaseMessage, HumanMessage, SystemMessage } from '@langchain/core/messages'
-import { ConversationSummaryMemory, ConversationSummaryMemoryInput } from 'langchain/memory'
+import { ConversationSummaryMemory, ConversationSummaryMemoryInput } from '@langchain/classic/memory'
 import { DataSource } from 'typeorm'
 import { ChatAnthropic } from '../../chatmodels/ChatAnthropic/FlowiseChatAnthropic'
 
@@ -69,6 +69,7 @@ class ConversationSummaryMemory_Memory implements INode {
         const appDataSource = options.appDataSource as DataSource
         const databaseEntities = options.databaseEntities as IDatabaseEntity
         const chatflowid = options.chatflowid as string
+        const orgId = options.orgId as string
 
         const obj: ConversationSummaryMemoryInput & BufferMemoryExtendedInput = {
             llm: model,
@@ -77,7 +78,8 @@ class ConversationSummaryMemory_Memory implements INode {
             sessionId,
             appDataSource,
             databaseEntities,
-            chatflowid
+            chatflowid,
+            orgId
         }
 
         return new ConversationSummaryMemoryExtended(obj)
@@ -89,12 +91,14 @@ interface BufferMemoryExtendedInput {
     appDataSource: DataSource
     databaseEntities: IDatabaseEntity
     chatflowid: string
+    orgId: string
 }
 
 class ConversationSummaryMemoryExtended extends FlowiseSummaryMemory implements MemoryMethods {
     appDataSource: DataSource
     databaseEntities: IDatabaseEntity
     chatflowid: string
+    orgId: string
     sessionId = ''
 
     constructor(fields: ConversationSummaryMemoryInput & BufferMemoryExtendedInput) {
@@ -103,6 +107,7 @@ class ConversationSummaryMemoryExtended extends FlowiseSummaryMemory implements 
         this.appDataSource = fields.appDataSource
         this.databaseEntities = fields.databaseEntities
         this.chatflowid = fields.chatflowid
+        this.orgId = fields.orgId
     }
 
     async getChatMessages(
@@ -128,7 +133,7 @@ class ConversationSummaryMemoryExtended extends FlowiseSummaryMemory implements 
             chatMessage.unshift(...prependMessages)
         }
 
-        const baseMessages = await mapChatMessageToBaseMessage(chatMessage)
+        const baseMessages = await mapChatMessageToBaseMessage(chatMessage, this.orgId)
 
         // Get summary
         if (this.llm && typeof this.llm !== 'string') {

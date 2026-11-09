@@ -15,6 +15,7 @@ import {
     NodeWithScore
 } from 'llamaindex'
 import { reformatSourceDocuments } from '../EngineUtils'
+import { EvaluationRunTracerLlama } from '../../../evaluation/EvaluationRunTracerLlama'
 
 class SubQuestionQueryEngine_LlamaIndex implements INode {
     label: string
@@ -29,6 +30,8 @@ class SubQuestionQueryEngine_LlamaIndex implements INode {
     inputs: INodeParams[]
     outputs: INodeOutputsValue[]
     sessionId?: string
+    badge: string
+    deprecateMessage: string
 
     constructor(fields?: { sessionId?: string }) {
         this.label = 'Sub Question Query Engine'
@@ -38,9 +41,11 @@ class SubQuestionQueryEngine_LlamaIndex implements INode {
         this.icon = 'subQueryEngine.svg'
         this.category = 'Engine'
         this.description =
-            'Breaks complex query into sub questions for each relevant data source, then gather all the intermediate reponses and synthesizes a final response'
+            'Breaks complex query into sub questions for each relevant data source, then gather all the intermediate responses and synthesizes a final response'
         this.baseClasses = [this.type, 'BaseQueryEngine']
         this.tags = ['LlamaIndex']
+        this.badge = 'DEPRECATING'
+        this.deprecateMessage = 'LlamaIndex integration is deprecated and will be removed in a future release.'
         this.inputs = [
             {
                 label: 'QueryEngine Tools',
@@ -88,6 +93,8 @@ class SubQuestionQueryEngine_LlamaIndex implements INode {
         let sourceDocuments: ICommonObject[] = []
         let sourceNodes: NodeWithScore<Metadata>[] = []
         let isStreamingStarted = false
+
+        await EvaluationRunTracerLlama.injectEvaluationMetadata(nodeData, options, queryEngine)
 
         const shouldStreamResponse = options.shouldStreamResponse
         const sseStreamer: IServerSideEventStreamer = options.sseStreamer as IServerSideEventStreamer

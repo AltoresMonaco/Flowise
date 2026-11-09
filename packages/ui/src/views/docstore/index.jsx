@@ -1,55 +1,63 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useSelector } from 'react-redux'
+import { useDispatch } from 'react-redux'
 
 // material-ui
-import {
-    Box,
-    Paper,
-    Skeleton,
-    Stack,
-    Table,
-    TableBody,
-    TableCell,
-    TableContainer,
-    TableHead,
-    TableRow,
-    ToggleButton,
-    ToggleButtonGroup,
-    Typography
-} from '@mui/material'
+import { Box, Button, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Stack, ToggleButton, ToggleButtonGroup } from '@mui/material'
 import { useTheme } from '@mui/material/styles'
 
 // project imports
-import MainCard from '@/ui-component/cards/MainCard'
-import DocumentStoreCard from '@/ui-component/cards/DocumentStoreCard'
-import { StyledButton } from '@/ui-component/button/StyledButton'
-import AddDocStoreDialog from '@/views/docstore/AddDocStoreDialog'
 import ErrorBoundary from '@/ErrorBoundary'
 import ViewHeader from '@/layout/MainLayout/ViewHeader'
-import DocumentStoreStatus from '@/views/docstore/DocumentStoreStatus'
+import { useError } from '@/store/context/ErrorContext'
+import { StyledPermissionButton } from '@/ui-component/button/RBACButtons'
+import DocumentStoreCard from '@/ui-component/cards/DocumentStoreCard'
+import MainCard from '@/ui-component/cards/MainCard'
+import TablePagination, { DEFAULT_ITEMS_PER_PAGE } from '@/ui-component/pagination/TablePagination'
+import AddDocStoreDialog from '@/views/docstore/AddDocStoreDialog'
+import DeleteDocStoreDialog from '@/views/docstore/DeleteDocStoreDialog'
 
 // API
-import useApi from '@/hooks/useApi'
 import documentsApi from '@/api/documentstore'
+import { useAuth } from '@/hooks/useAuth'
+import useApi from '@/hooks/useApi'
 
 // icons
-import { IconPlus, IconLayoutGrid, IconList } from '@tabler/icons-react'
+import { IconDotsVertical, IconEdit, IconLayoutGrid, IconList, IconPlus, IconTrash, IconX } from '@tabler/icons-react'
 import doc_store_empty from '@/assets/images/doc_store_empty.svg'
 
 // const
 import { baseURL, gridSpacing } from '@/store/constant'
+import { DocumentStoreTable } from '@/ui-component/table/DocumentStoreTable'
+import { closeSnackbar as closeSnackbarAction, enqueueSnackbar as enqueueSnackbarAction } from '@/store/actions'
+
+// utils
+import useNotifier from '@/utils/useNotifier'
 
 // ==============================|| DOCUMENTS ||============================== //
+const getDocStoreActionButtonSx = (theme) => ({
+    p: 0.5,
+    color: theme.palette.text.primary,
+    backgroundColor: theme.palette.mode === 'dark' ? theme.palette.background.default : theme.palette.background.paper,
+    border: `1px solid ${theme.palette.divider}`,
+    '&:hover': {
+        backgroundColor: theme.palette.action.hover,
+        borderColor: theme.palette.text.secondary
+    }
+})
 
 const Documents = () => {
     const theme = useTheme()
-    const customization = useSelector((state) => state.customization)
-
+    const dispatch = useDispatch()
     const navigate = useNavigate()
+    const { hasPermission } = useAuth()
     const getAllDocumentStores = useApi(documentsApi.getAllDocumentStores)
+    const { error } = useError()
+    useNotifier()
 
-    const [error, setError] = useState(null)
+    const enqueueSnackbar = (...args) => dispatch(enqueueSnackbarAction(...args))
+    const closeSnackbar = (...args) => dispatch(closeSnackbarAction(...args))
+
     const [isLoading, setLoading] = useState(true)
     const [images, setImages] = useState({})
     const [search, setSearch] = useState('')
@@ -57,6 +65,15 @@ const Documents = () => {
     const [dialogProps, setDialogProps] = useState({})
     const [docStores, setDocStores] = useState([])
     const [view, setView] = useState(localStorage.getItem('docStoreDisplayStyle') || 'card')
+    const [actionMenuAnchorEl, setActionMenuAnchorEl] = useState(null)
+    const [selectedDocumentStore, setSelectedDocumentStore] = useState(null)
+    const [showDeleteDocStoreDialog, setShowDeleteDocStoreDialog] = useState(false)
+    const [deleteDocStoreDialogProps, setDeleteDocStoreDialogProps] = useState({})
+
+    const canRenameDocumentStore = hasPermission('documentStores:create,documentStores:update')
+    const canDeleteDocumentStore = hasPermission('documentStores:delete')
+    const canManageDocumentStore = canRenameDocumentStore || canDeleteDocumentStore
+    const isActionMenuOpen = Boolean(actionMenuAnchorEl)
 
     const handleChange = (event, nextView) => {
         if (nextView === null) return
@@ -65,11 +82,32 @@ const Documents = () => {
     }
 
     function filterDocStores(data) {
-        return data.name.toLowerCase().indexOf(search.toLowerCase()) > -1
+        return (
+            data.name.toLowerCase().indexOf(search.toLowerCase()) > -1 || data.description.toLowerCase().indexOf(search.toLowerCase()) > -1
+        )
     }
 
     const onSearchChange = (event) => {
         setSearch(event.target.value)
+    }
+
+    const getDeleteErrorMessage = (error) => {
+        const responseData = error?.response?.data
+
+        if (typeof responseData === 'string' && responseData.trim()) {
+            return responseData
+        }
+
+        const responseMessage = responseData && typeof responseData === 'object' ? responseData.message || responseData.error : undefined
+        if (typeof responseMessage === 'string' && responseMessage.trim()) {
+            return responseMessage
+        }
+
+        if (typeof error?.message === 'string' && error.message.trim()) {
+            return error.message
+        }
+
+        return 'Unknown error'
     }
 
     const goToDocumentStore = (id) => {
@@ -87,43 +125,187 @@ const Documents = () => {
         setShowDialog(true)
     }
 
-    const onConfirm = () => {
+    const onConfirm = (docStoreId, updatedDocStoreData) => {
         setShowDialog(false)
-        getAllDocumentStores.request()
+
+        // For rename from list/table, update locally to avoid full-table loading skeleton flash.
+        if (dialogProps?.type === 'EDIT' && docStoreId) {
+            setDocStores((prev) =>
+                prev.map((store) =>
+                    store.id === docStoreId
+                        ? {
+                              ...store,
+                              ...(updatedDocStoreData || {})
+                          }
+                        : store
+                )
+            )
+            return
+        }
+
+        applyFilters(currentPage, pageLimit)
+    }
+
+    const handleActionMenuOpen = (event, documentStore) => {
+        event.preventDefault()
+        event.stopPropagation()
+        setSelectedDocumentStore(documentStore)
+        setActionMenuAnchorEl(event.currentTarget)
+    }
+
+    const handleActionMenuClose = () => {
+        setActionMenuAnchorEl(null)
+        setSelectedDocumentStore(null)
+    }
+
+    const renameDocumentStore = () => {
+        if (!selectedDocumentStore) return
+        const dialogProp = {
+            title: 'Rename Document Store',
+            type: 'EDIT',
+            cancelButtonName: 'Cancel',
+            confirmButtonName: 'Save',
+            data: {
+                id: selectedDocumentStore.id,
+                name: selectedDocumentStore.name,
+                description: selectedDocumentStore.description
+            }
+        }
+        handleActionMenuClose()
+        setDialogProps(dialogProp)
+        setShowDialog(true)
+    }
+
+    const deleteDocumentStore = () => {
+        if (!selectedDocumentStore) return
+        const documentStoreToDelete = selectedDocumentStore
+        handleActionMenuClose()
+
+        let description = `Delete store [${documentStoreToDelete.name}]? This will remove this document store from the list.`
+
+        if (
+            documentStoreToDelete.recordManagerConfig &&
+            documentStoreToDelete.vectorStoreConfig &&
+            Object.keys(documentStoreToDelete.recordManagerConfig).length > 0 &&
+            Object.keys(documentStoreToDelete.vectorStoreConfig).length > 0
+        ) {
+            description = `Delete store [${documentStoreToDelete.name}]? This will remove this document store from the list and remove the actual data from the vector store database.`
+        }
+
+        setDeleteDocStoreDialogProps({
+            title: 'Delete',
+            description,
+            vectorStoreConfig: documentStoreToDelete.vectorStoreConfig,
+            recordManagerConfig: documentStoreToDelete.recordManagerConfig,
+            type: 'STORE',
+            storeId: documentStoreToDelete.id
+        })
+        setShowDeleteDocStoreDialog(true)
+    }
+
+    const onDocStoreDelete = async (type) => {
+        setShowDeleteDocStoreDialog(false)
+        if (type !== 'STORE') return
+
+        const storeId = deleteDocStoreDialogProps?.storeId
+        if (!storeId) return
+
+        try {
+            const deleteResp = await documentsApi.deleteDocumentStore(storeId)
+            if (deleteResp.data) {
+                enqueueSnackbar({
+                    message: 'Document Store deleted.',
+                    options: {
+                        key: new Date().getTime() + Math.random(),
+                        variant: 'success',
+                        action: (key) => (
+                            <Button style={{ color: 'white' }} onClick={() => closeSnackbar(key)}>
+                                <IconX />
+                            </Button>
+                        )
+                    }
+                })
+                // Update list instantly instead of full refetch/skeleton.
+                setDocStores((prev) => prev.filter((store) => store.id !== storeId))
+                setImages((prev) => {
+                    const nextImages = { ...prev }
+                    delete nextImages[storeId]
+                    return nextImages
+                })
+                setTotal((prev) => Math.max(0, prev - 1))
+            }
+        } catch (error) {
+            const errorMessage = getDeleteErrorMessage(error)
+
+            enqueueSnackbar({
+                message: `Failed to delete Document Store: ${errorMessage}`,
+                options: {
+                    key: new Date().getTime() + Math.random(),
+                    variant: 'error',
+                    persist: true,
+                    action: (key) => (
+                        <Button style={{ color: 'white' }} onClick={() => closeSnackbar(key)}>
+                            <IconX />
+                        </Button>
+                    )
+                }
+            })
+        }
     }
 
     useEffect(() => {
-        getAllDocumentStores.request()
+        applyFilters(currentPage, pageLimit)
 
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
+    /* Table Pagination */
+    const [currentPage, setCurrentPage] = useState(1)
+    const [pageLimit, setPageLimit] = useState(() => Number(localStorage.getItem('docStorePageSize') || DEFAULT_ITEMS_PER_PAGE))
+    const [total, setTotal] = useState(0)
+    const onChange = (page, pageLimit) => {
+        setCurrentPage(page)
+        setPageLimit(pageLimit)
+        localStorage.setItem('docStorePageSize', pageLimit)
+        applyFilters(page, pageLimit)
+    }
+
+    const applyFilters = (page, limit) => {
+        setLoading(true)
+        const params = {
+            page: page || currentPage,
+            limit: limit || pageLimit
+        }
+        getAllDocumentStores.request(params)
+    }
+
     useEffect(() => {
         if (getAllDocumentStores.data) {
             try {
-                const docStores = getAllDocumentStores.data
-                if (!Array.isArray(docStores)) return
+                const { data, total } = getAllDocumentStores.data
+                if (!Array.isArray(data)) return
                 const loaderImages = {}
 
-                for (let i = 0; i < docStores.length; i += 1) {
-                    const loaders = docStores[i].loaders ?? []
+                for (let i = 0; i < data.length; i += 1) {
+                    const loaders = data[i].loaders ?? []
 
                     let totalChunks = 0
                     let totalChars = 0
-                    loaderImages[docStores[i].id] = []
+                    loaderImages[data[i].id] = []
                     for (let j = 0; j < loaders.length; j += 1) {
                         const imageSrc = `${baseURL}/api/v1/node-icon/${loaders[j].loaderId}`
-                        if (!loaderImages[docStores[i].id].includes(imageSrc)) {
-                            loaderImages[docStores[i].id].push(imageSrc)
+                        if (!loaderImages[data[i].id].includes(imageSrc)) {
+                            loaderImages[data[i].id].push(imageSrc)
                         }
                         totalChunks += loaders[j]?.totalChunks ?? 0
                         totalChars += loaders[j]?.totalChars ?? 0
                     }
-                    docStores[i].totalDocs = loaders?.length ?? 0
-                    docStores[i].totalChunks = totalChunks
-                    docStores[i].totalChars = totalChars
+                    data[i].totalDocs = loaders?.length ?? 0
+                    data[i].totalChunks = totalChunks
+                    data[i].totalChars = totalChars
                 }
-                setDocStores(docStores)
+                setDocStores(data)
+                setTotal(total)
                 setImages(loaderImages)
             } catch (e) {
                 console.error(e)
@@ -135,9 +317,7 @@ const Documents = () => {
         setLoading(getAllDocumentStores.loading)
     }, [getAllDocumentStores.loading])
 
-    useEffect(() => {
-        setError(getAllDocumentStores.error)
-    }, [getAllDocumentStores.error])
+    const hasDocStores = docStores && docStores.length > 0
 
     return (
         <MainCard>
@@ -145,40 +325,49 @@ const Documents = () => {
                 <ErrorBoundary error={error} />
             ) : (
                 <Stack flexDirection='column' sx={{ gap: 3 }}>
-                    <ViewHeader onSearchChange={onSearchChange} search={true} searchPlaceholder='Search Name' title='Document Store'>
-                        <ToggleButtonGroup
-                            sx={{ borderRadius: 2, maxHeight: 40 }}
-                            value={view}
-                            color='primary'
-                            exclusive
-                            onChange={handleChange}
-                        >
-                            <ToggleButton
-                                sx={{
-                                    borderColor: theme.palette.grey[900] + 25,
-                                    borderRadius: 2,
-                                    color: theme?.customization?.isDarkMode ? 'white' : 'inherit'
-                                }}
-                                variant='contained'
-                                value='card'
-                                title='Card View'
+                    <ViewHeader
+                        onSearchChange={onSearchChange}
+                        search={hasDocStores}
+                        searchPlaceholder='Search Name'
+                        title='Document Store'
+                        description='Store and upsert documents for LLM retrieval (RAG)'
+                    >
+                        {hasDocStores && (
+                            <ToggleButtonGroup
+                                sx={{ borderRadius: 2, maxHeight: 40 }}
+                                value={view}
+                                color='primary'
+                                exclusive
+                                onChange={handleChange}
                             >
-                                <IconLayoutGrid />
-                            </ToggleButton>
-                            <ToggleButton
-                                sx={{
-                                    borderColor: theme.palette.grey[900] + 25,
-                                    borderRadius: 2,
-                                    color: theme?.customization?.isDarkMode ? 'white' : 'inherit'
-                                }}
-                                variant='contained'
-                                value='list'
-                                title='List View'
-                            >
-                                <IconList />
-                            </ToggleButton>
-                        </ToggleButtonGroup>
-                        <StyledButton
+                                <ToggleButton
+                                    sx={{
+                                        borderColor: theme.palette.grey[900] + 25,
+                                        borderRadius: 2,
+                                        color: theme?.customization?.isDarkMode ? 'white' : 'inherit'
+                                    }}
+                                    variant='contained'
+                                    value='card'
+                                    title='Card View'
+                                >
+                                    <IconLayoutGrid />
+                                </ToggleButton>
+                                <ToggleButton
+                                    sx={{
+                                        borderColor: theme.palette.grey[900] + 25,
+                                        borderRadius: 2,
+                                        color: theme?.customization?.isDarkMode ? 'white' : 'inherit'
+                                    }}
+                                    variant='contained'
+                                    value='list'
+                                    title='List View'
+                                >
+                                    <IconList />
+                                </ToggleButton>
+                            </ToggleButtonGroup>
+                        )}
+                        <StyledPermissionButton
+                            permissionId={'documentStores:create'}
                             variant='contained'
                             sx={{ borderRadius: 2, height: '100%' }}
                             onClick={addNew}
@@ -186,144 +375,9 @@ const Documents = () => {
                             id='btn_createVariable'
                         >
                             Add New
-                        </StyledButton>
+                        </StyledPermissionButton>
                     </ViewHeader>
-                    {!view || view === 'card' ? (
-                        <>
-                            {isLoading && !docStores ? (
-                                <Box display='grid' gridTemplateColumns='repeat(3, 1fr)' gap={gridSpacing}>
-                                    <Skeleton variant='rounded' height={160} />
-                                    <Skeleton variant='rounded' height={160} />
-                                    <Skeleton variant='rounded' height={160} />
-                                </Box>
-                            ) : (
-                                <Box display='grid' gridTemplateColumns='repeat(3, 1fr)' gap={gridSpacing}>
-                                    {docStores?.filter(filterDocStores).map((data, index) => (
-                                        <DocumentStoreCard
-                                            key={index}
-                                            images={images[data.id]}
-                                            data={data}
-                                            onClick={() => goToDocumentStore(data.id)}
-                                        />
-                                    ))}
-                                </Box>
-                            )}
-                        </>
-                    ) : (
-                        <TableContainer sx={{ border: 1, borderColor: theme.palette.grey[900] + 25, borderRadius: 2 }} component={Paper}>
-                            <Table aria-label='documents table'>
-                                <TableHead
-                                    sx={{
-                                        backgroundColor: customization.isDarkMode ? theme.palette.common.black : theme.palette.grey[100],
-                                        height: 56
-                                    }}
-                                >
-                                    <TableRow>
-                                        <TableCell>&nbsp;</TableCell>
-                                        <TableCell>Name</TableCell>
-                                        <TableCell>Description</TableCell>
-                                        <TableCell>Connected flows</TableCell>
-                                        <TableCell>Total characters</TableCell>
-                                        <TableCell>Total chunks</TableCell>
-                                        <TableCell>Loader types</TableCell>
-                                    </TableRow>
-                                </TableHead>
-                                <TableBody>
-                                    {docStores?.filter(filterDocStores).map((data, index) => (
-                                        <TableRow
-                                            onClick={() => goToDocumentStore(data.id)}
-                                            hover
-                                            key={index}
-                                            sx={{ cursor: 'pointer', '&:last-child td, &:last-child th': { border: 0 } }}
-                                        >
-                                            <TableCell align='center'>
-                                                <DocumentStoreStatus isTableView={true} status={data.status} />
-                                            </TableCell>
-                                            <TableCell>
-                                                <Typography
-                                                    sx={{
-                                                        display: '-webkit-box',
-                                                        WebkitLineClamp: 5,
-                                                        WebkitBoxOrient: 'vertical',
-                                                        textOverflow: 'ellipsis',
-                                                        overflow: 'hidden'
-                                                    }}
-                                                >
-                                                    {data.name}
-                                                </Typography>
-                                            </TableCell>
-                                            <TableCell>
-                                                <Typography
-                                                    sx={{
-                                                        display: '-webkit-box',
-                                                        WebkitLineClamp: 5,
-                                                        WebkitBoxOrient: 'vertical',
-                                                        textOverflow: 'ellipsis',
-                                                        overflow: 'hidden'
-                                                    }}
-                                                >
-                                                    {data?.description}
-                                                </Typography>
-                                            </TableCell>
-                                            <TableCell>{data.whereUsed?.length ?? 0}</TableCell>
-                                            <TableCell>{data.totalChars}</TableCell>
-                                            <TableCell>{data.totalChunks}</TableCell>
-                                            <TableCell>
-                                                {images[data.id] && (
-                                                    <Box
-                                                        sx={{
-                                                            display: 'flex',
-                                                            alignItems: 'center',
-                                                            justifyContent: 'start',
-                                                            gap: 1
-                                                        }}
-                                                    >
-                                                        {images[data.id].slice(0, images.length > 3 ? 3 : images.length).map((img) => (
-                                                            <Box
-                                                                key={img}
-                                                                sx={{
-                                                                    width: 30,
-                                                                    height: 30,
-                                                                    borderRadius: '50%',
-                                                                    backgroundColor: customization.isDarkMode
-                                                                        ? theme.palette.common.white
-                                                                        : theme.palette.grey[300] + 75
-                                                                }}
-                                                            >
-                                                                <img
-                                                                    style={{
-                                                                        width: '100%',
-                                                                        height: '100%',
-                                                                        padding: 5,
-                                                                        objectFit: 'contain'
-                                                                    }}
-                                                                    alt=''
-                                                                    src={img}
-                                                                />
-                                                            </Box>
-                                                        ))}
-                                                        {images.length > 3 && (
-                                                            <Typography
-                                                                sx={{
-                                                                    alignItems: 'center',
-                                                                    display: 'flex',
-                                                                    fontSize: '.9rem',
-                                                                    fontWeight: 200
-                                                                }}
-                                                            >
-                                                                + {images.length - 3} More
-                                                            </Typography>
-                                                        )}
-                                                    </Box>
-                                                )}
-                                            </TableCell>
-                                        </TableRow>
-                                    ))}
-                                </TableBody>
-                            </Table>
-                        </TableContainer>
-                    )}
-                    {!isLoading && (!docStores || docStores.length === 0) && (
+                    {!hasDocStores ? (
                         <Stack sx={{ alignItems: 'center', justifyContent: 'center' }} flexDirection='column'>
                             <Box sx={{ p: 2, height: 'auto' }}>
                                 <img
@@ -334,6 +388,59 @@ const Documents = () => {
                             </Box>
                             <div>No Document Stores Created Yet</div>
                         </Stack>
+                    ) : (
+                        <React.Fragment>
+                            {!view || view === 'card' ? (
+                                <Box display='grid' gridTemplateColumns='repeat(3, 1fr)' gap={gridSpacing}>
+                                    {docStores?.filter(filterDocStores).map((data) => (
+                                        <Box key={data.id} sx={{ position: 'relative' }}>
+                                            <DocumentStoreCard
+                                                images={images[data.id]}
+                                                data={data}
+                                                hasActions={canManageDocumentStore}
+                                                onClick={() => goToDocumentStore(data.id)}
+                                            />
+                                            {canManageDocumentStore && (
+                                                <IconButton
+                                                    size='small'
+                                                    aria-label='Document store actions'
+                                                    sx={{
+                                                        position: 'absolute',
+                                                        top: 16,
+                                                        right: 10,
+                                                        zIndex: 2,
+                                                        width: 30,
+                                                        height: 30,
+                                                        ...getDocStoreActionButtonSx(theme),
+                                                        [theme.breakpoints.down('sm')]: {
+                                                            top: 8,
+                                                            right: 8,
+                                                            width: 28,
+                                                            height: 28
+                                                        }
+                                                    }}
+                                                    onClick={(event) => handleActionMenuOpen(event, data)}
+                                                >
+                                                    <IconDotsVertical size={18} />
+                                                </IconButton>
+                                            )}
+                                        </Box>
+                                    ))}
+                                </Box>
+                            ) : (
+                                <DocumentStoreTable
+                                    isLoading={isLoading}
+                                    data={docStores?.filter(filterDocStores)}
+                                    images={images}
+                                    onRowClick={(row) => goToDocumentStore(row.id)}
+                                    showActions={canManageDocumentStore}
+                                    onActionMenuClick={handleActionMenuOpen}
+                                    actionButtonSx={getDocStoreActionButtonSx(theme)}
+                                />
+                            )}
+                            {/* Pagination and Page Size Controls */}
+                            <TablePagination currentPage={currentPage} limit={pageLimit} total={total} onChange={onChange} />
+                        </React.Fragment>
                     )}
                 </Stack>
             )}
@@ -345,6 +452,38 @@ const Documents = () => {
                     onConfirm={onConfirm}
                 />
             )}
+            {showDeleteDocStoreDialog && (
+                <DeleteDocStoreDialog
+                    show={showDeleteDocStoreDialog}
+                    dialogProps={deleteDocStoreDialogProps}
+                    onCancel={() => setShowDeleteDocStoreDialog(false)}
+                    onDelete={onDocStoreDelete}
+                />
+            )}
+            <Menu
+                anchorEl={actionMenuAnchorEl}
+                open={isActionMenuOpen}
+                onClose={handleActionMenuClose}
+                transformOrigin={{ horizontal: 'right', vertical: 'top' }}
+                anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
+            >
+                {canRenameDocumentStore && (
+                    <MenuItem onClick={renameDocumentStore}>
+                        <ListItemIcon>
+                            <IconEdit size={16} />
+                        </ListItemIcon>
+                        <ListItemText>Rename</ListItemText>
+                    </MenuItem>
+                )}
+                {canDeleteDocumentStore && (
+                    <MenuItem onClick={deleteDocumentStore}>
+                        <ListItemIcon>
+                            <IconTrash size={16} />
+                        </ListItemIcon>
+                        <ListItemText>Delete</ListItemText>
+                    </MenuItem>
+                )}
+            </Menu>
         </MainCard>
     )
 }

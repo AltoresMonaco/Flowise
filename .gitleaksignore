@@ -1,0 +1,7 @@
+# Findings in upstream FlowiseAI history (tests, docs, a 2023 example key), reviewed 2026-11-09.
+# None of them is an Altores secret. New findings still fail the scan.
+62a5d1d59c2a2c396ac926b5c828d43ad9c1132f:packages/server/src/services/mcp-server/index.test.ts:generic-api-key:287
+2e3dfdef03edc173872bfee24ae104a11cacd7b5:packages/server/test/enterprise/utils/url.util.test.ts:generic-api-key:99
+fe03683f0ce97c491f450f38f42b57351d845d2a:metrics/otel/otel.config.yml:generic-api-key:57
+e8f5f077350dfc13d697f0f9ef66e24538d9a22e:packages/api-documentation/src/yml/swagger.yml:generic-api-key:938
+05c86ff9c5ab618e0da5ef6adaf5b081c1dde0a5:packages/server/src/example.ts:openai-api-key:58

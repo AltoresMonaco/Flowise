@@ -2,6 +2,7 @@ import { BaseCache } from '@langchain/core/caches'
 import { ChatOpenAI, ChatOpenAIFields } from '@langchain/openai'
 import { ICommonObject, INode, INodeData, INodeParams } from '../../../src/Interface'
 import { getBaseClasses, getCredentialData, getCredentialParam } from '../../../src/utils'
+import { checkDenyList } from '../../../src/httpSecurity'
 
 class ChatNvdiaNIM_ChatModels implements INode {
     label: string
@@ -16,10 +17,10 @@ class ChatNvdiaNIM_ChatModels implements INode {
     inputs: INodeParams[]
 
     constructor() {
-        this.label = 'Chat NVIDIA NIM'
-        this.name = 'Chat NVIDIA NIM'
+        this.label = 'Nvidia NIM'
+        this.name = 'chatNvidiaNIM'
         this.version = 1.1
-        this.type = 'Chat NVIDIA NIM'
+        this.type = 'ChatNvidiaNIM'
         this.icon = 'nvdia.svg'
         this.category = 'Chat Models'
         this.description = 'Wrapper around NVIDIA NIM Inference API'
@@ -137,6 +138,7 @@ class ChatNvdiaNIM_ChatModels implements INode {
             temperature: parseFloat(temperature),
             modelName,
             openAIApiKey: nvidiaNIMApiKey ?? 'sk-',
+            apiKey: nvidiaNIMApiKey ?? 'sk-',
             streaming: streaming ?? true
         }
 
@@ -156,6 +158,8 @@ class ChatNvdiaNIM_ChatModels implements INode {
                 throw new Error("Invalid JSON in the Chat NVIDIA NIM's baseOptions: " + exception)
             }
         }
+
+        if (basePath) await checkDenyList(basePath)
 
         if (basePath || parsedBaseOptions) {
             obj.configuration = {

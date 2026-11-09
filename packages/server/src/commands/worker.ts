@@ -7,6 +7,8 @@ import { NodesPool } from '../NodesPool'
 import { CachePool } from '../CachePool'
 import { QueueEvents, QueueEventsListener } from 'bullmq'
 import { AbortControllerPool } from '../AbortControllerPool'
+import { UsageCacheManager } from '../UsageCacheManager'
+import { IdentityManager } from '../IdentityManager'
 
 interface CustomListener extends QueueEventsListener {
     abort: (args: { id: string }, id: string) => void
@@ -15,11 +17,13 @@ interface CustomListener extends QueueEventsListener {
 export default class Worker extends BaseCommand {
     predictionWorkerId: string
     upsertionWorkerId: string
+    scheduleWorkerId: string
 
     async run(): Promise<void> {
         logger.info('Starting Flowise Worker...')
 
-        const { appDataSource, telemetry, componentNodes, cachePool, abortControllerPool } = await this.prepareData()
+        const { appDataSource, telemetry, componentNodes, cachePool, abortControllerPool, usageCacheManager, identityManager } =
+            await this.prepareData()
 
         const queueManager = QueueManager.getInstance()
         queueManager.setupAllQueues({
@@ -27,7 +31,9 @@ export default class Worker extends BaseCommand {
             telemetry,
             cachePool,
             appDataSource,
-            abortControllerPool
+            abortControllerPool,
+            usageCacheManager,
+            identityManager
         })
 
         /** Prediction */
@@ -48,6 +54,12 @@ export default class Worker extends BaseCommand {
         const upsertionWorker = upsertionQueue.createWorker()
         this.upsertionWorkerId = upsertionWorker.id
         logger.info(`Upsertion Worker ${this.upsertionWorkerId} created`)
+
+        /** Schedule */
+        const scheduleQueue = queueManager.getQueue('schedule')
+        const scheduleWorker = scheduleQueue.createWorker()
+        this.scheduleWorkerId = scheduleWorker.id
+        logger.info(`Schedule Worker ${this.scheduleWorkerId} created`)
 
         // Keep the process running
         process.stdin.resume()
@@ -72,7 +84,21 @@ export default class Worker extends BaseCommand {
         // Initialize cache pool
         const cachePool = new CachePool()
 
-        return { appDataSource, telemetry, componentNodes: nodesPool.componentNodes, cachePool, abortControllerPool }
+        // Initialize usage cache manager
+        const usageCacheManager = await UsageCacheManager.getInstance()
+
+        // Initialize identity manager
+        const identityManager = await IdentityManager.getInstance()
+
+        return {
+            appDataSource,
+            telemetry,
+            componentNodes: nodesPool.componentNodes,
+            cachePool,
+            abortControllerPool,
+            usageCacheManager,
+            identityManager
+        }
     }
 
     async catch(error: Error) {
@@ -93,6 +119,10 @@ export default class Worker extends BaseCommand {
             const upsertWorker = queueManager.getQueue('upsert').getWorker()
             logger.info(`Shutting down Flowise Upsertion Worker ${this.upsertionWorkerId}...`)
             await upsertWorker.close()
+
+            const scheduleWorker = queueManager.getQueue('schedule').getWorker()
+            logger.info(`Shutting down Flowise Schedule Worker ${this.scheduleWorkerId}...`)
+            await scheduleWorker.close()
         } catch (error) {
             logger.error('There was an error shutting down Flowise Worker...', error)
             await this.failExit()

@@ -17,7 +17,7 @@ class Groq_ChatModels implements INode {
     inputs: INodeParams[]
 
     constructor() {
-        this.label = 'GroqChat'
+        this.label = 'Groq'
         this.name = 'groqChat'
         this.version = 4.0
         this.type = 'GroqChat'
@@ -55,6 +55,14 @@ class Groq_ChatModels implements INode {
                 optional: true
             },
             {
+                label: 'Max Tokens',
+                name: 'maxTokens',
+                type: 'number',
+                step: 1,
+                optional: true,
+                additionalParams: true
+            },
+            {
                 label: 'Streaming',
                 name: 'streaming',
                 type: 'boolean',
@@ -73,6 +81,7 @@ class Groq_ChatModels implements INode {
 
     async init(nodeData: INodeData, _: string, options: ICommonObject): Promise<any> {
         const modelName = nodeData.inputs?.modelName as string
+        const maxTokens = nodeData.inputs?.maxTokens as string
         const cache = nodeData.inputs?.cache as BaseCache
         const temperature = nodeData.inputs?.temperature as string
         const streaming = nodeData.inputs?.streaming as boolean
@@ -81,11 +90,12 @@ class Groq_ChatModels implements INode {
         const groqApiKey = getCredentialParam('groqApiKey', credentialData, nodeData)
 
         const obj: ChatGroqInput = {
-            modelName,
+            model: modelName,
             temperature: parseFloat(temperature),
             apiKey: groqApiKey,
             streaming: streaming ?? true
         }
+        if (maxTokens) obj.maxTokens = parseInt(maxTokens, 10)
         if (cache) obj.cache = cache
 
         const model = new ChatGroq(obj)

@@ -1,11 +1,23 @@
-import { useDispatch } from 'react-redux'
+import { useDispatch, useSelector } from 'react-redux'
 import { useState, useEffect } from 'react'
 import PropTypes from 'prop-types'
 import { enqueueSnackbar as enqueueSnackbarAction, closeSnackbar as closeSnackbarAction, SET_CHATFLOW } from '@/store/actions'
 import parser from 'html-react-parser'
 
 // material-ui
-import { Button, Box } from '@mui/material'
+import {
+    Button,
+    Box,
+    Typography,
+    FormControl,
+    RadioGroup,
+    FormControlLabel,
+    Radio,
+    Accordion,
+    AccordionSummary,
+    AccordionDetails
+} from '@mui/material'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { IconX, IconBulb } from '@tabler/icons-react'
 
 // Project import
@@ -18,12 +30,30 @@ import useNotifier from '@/utils/useNotifier'
 // API
 import chatflowsApi from '@/api/chatflows'
 
-const message = `Uploaded files will be parsed as strings and sent to the LLM. If file upload is enabled on the Vector Store as well, this will override and take precedence.
+const message = `The full contents of uploaded files will be converted to text and sent to the Agent.
 <br />
-Refer <a href='https://docs.flowiseai.com/using-flowise/uploads#files' target='_blank'>docs</a> for more details.`
+Refer <a href='https://docs.flowiseai.com/using-flowise/uploads#files' target='_blank' style='color: #2196f3'>docs</a> for more details.`
+
+const availableFileTypes = [
+    { name: 'CSS', ext: 'text/css', extension: '.css' },
+    { name: 'CSV', ext: 'text/csv', extension: '.csv' },
+    { name: 'HTML', ext: 'text/html', extension: '.html' },
+    { name: 'JSON', ext: 'application/json', extension: '.json' },
+    { name: 'Markdown', ext: 'text/markdown', extension: '.md' },
+    { name: 'YAML', ext: 'application/x-yaml', extension: '.yaml' },
+    { name: 'PDF', ext: 'application/pdf', extension: '.pdf' },
+    { name: 'SQL', ext: 'application/sql', extension: '.sql' },
+    { name: 'Text File', ext: 'text/plain', extension: '.txt' },
+    { name: 'XML', ext: 'application/xml', extension: '.xml' },
+    { name: 'DOC', ext: 'application/msword', extension: '.doc' },
+    { name: 'DOCX', ext: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', extension: '.docx' },
+    { name: 'XLSX', ext: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', extension: '.xlsx' },
+    { name: 'PPTX', ext: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', extension: '.pptx' }
+]
 
 const FileUpload = ({ dialogProps }) => {
     const dispatch = useDispatch()
+    const customization = useSelector((state) => state.customization)
 
     useNotifier()
 
@@ -31,16 +61,34 @@ const FileUpload = ({ dialogProps }) => {
     const closeSnackbar = (...args) => dispatch(closeSnackbarAction(...args))
 
     const [fullFileUpload, setFullFileUpload] = useState(false)
+    const [allowedFileTypes, setAllowedFileTypes] = useState([])
     const [chatbotConfig, setChatbotConfig] = useState({})
-
+    const [pdfUsage, setPdfUsage] = useState('perPage')
     const handleChange = (value) => {
         setFullFileUpload(value)
+    }
+
+    const handleAllowedFileTypesChange = (event) => {
+        const { checked, value } = event.target
+        if (checked) {
+            setAllowedFileTypes((prev) => [...prev, value])
+        } else {
+            setAllowedFileTypes((prev) => prev.filter((item) => item !== value))
+        }
+    }
+
+    const handlePdfUsageChange = (event) => {
+        setPdfUsage(event.target.value)
     }
 
     const onSave = async () => {
         try {
             const value = {
-                status: fullFileUpload
+                status: fullFileUpload,
+                allowedUploadFileTypes: allowedFileTypes.join(','),
+                pdfFile: {
+                    usage: pdfUsage
+                }
             }
             chatbotConfig.fullFileUpload = value
 
@@ -82,6 +130,9 @@ const FileUpload = ({ dialogProps }) => {
     }
 
     useEffect(() => {
+        /* backward compatibility - by default, allow all */
+        const allowedFileTypes = availableFileTypes.map((fileType) => fileType.ext)
+        setAllowedFileTypes(allowedFileTypes)
         if (dialogProps.chatflow) {
             if (dialogProps.chatflow.chatbotConfig) {
                 try {
@@ -89,6 +140,13 @@ const FileUpload = ({ dialogProps }) => {
                     setChatbotConfig(chatbotConfig || {})
                     if (chatbotConfig.fullFileUpload) {
                         setFullFileUpload(chatbotConfig.fullFileUpload.status)
+                    }
+                    if (chatbotConfig.fullFileUpload?.allowedUploadFileTypes) {
+                        const allowedFileTypes = chatbotConfig.fullFileUpload.allowedUploadFileTypes.split(',')
+                        setAllowedFileTypes(allowedFileTypes)
+                    }
+                    if (chatbotConfig.fullFileUpload?.pdfFile?.usage) {
+                        setPdfUsage(chatbotConfig.fullFileUpload.pdfFile.usage)
                     }
                 } catch (e) {
                     setChatbotConfig({})
@@ -112,33 +170,115 @@ const FileUpload = ({ dialogProps }) => {
                     mb: 2
                 }}
             >
-                <div
-                    style={{
+                <Box
+                    sx={{
                         display: 'flex',
-                        flexDirection: 'column',
-                        borderRadius: 10,
-                        background: '#d8f3dc',
+                        alignItems: 'center',
+                        gap: 1.25,
+                        borderRadius: '8px',
+                        bgcolor: 'rgba(34, 197, 94, 0.08)',
+                        border: '1px solid',
+                        borderColor: 'rgba(34, 197, 94, 0.2)',
                         width: '100%',
-                        padding: 10
+                        px: 1.75,
+                        py: 1.25
                     }}
                 >
+                    <IconBulb size={20} color='#16a34a' style={{ flexShrink: 0 }} />
+                    <Typography sx={{ color: 'text.secondary', fontSize: '0.8125rem', lineHeight: 1.5 }}>{parser(message)}</Typography>
+                </Box>
+                <SwitchInput label='Enable Full File Upload' onChange={handleChange} value={fullFileUpload} />
+            </Box>
+
+            <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, mb: 1 }}>Allow Uploads of Type</Typography>
+            <div
+                style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
+                    gap: 15,
+                    padding: 10,
+                    width: '100%',
+                    marginBottom: '10px'
+                }}
+            >
+                {availableFileTypes.map((fileType) => (
                     <div
+                        key={fileType.ext}
                         style={{
                             display: 'flex',
                             flexDirection: 'row',
-                            alignItems: 'center'
+                            alignItems: 'center',
+                            justifyContent: 'start'
                         }}
                     >
-                        <IconBulb size={30} color='#2d6a4f' />
-                        <span style={{ color: '#2d6a4f', marginLeft: 10, fontWeight: 500 }}>{parser(message)}</span>
+                        <input
+                            type='checkbox'
+                            id={fileType.ext}
+                            name={fileType.ext}
+                            checked={allowedFileTypes.indexOf(fileType.ext) !== -1}
+                            value={fileType.ext}
+                            disabled={!fullFileUpload}
+                            onChange={handleAllowedFileTypesChange}
+                        />
+                        <label htmlFor={fileType.ext} style={{ marginLeft: 10, fontSize: '0.8125rem' }}>
+                            {fileType.name} ({fileType.extension})
+                        </label>
                     </div>
-                </div>
-                <SwitchInput label='Enable Full File Upload' onChange={handleChange} value={fullFileUpload} />
+                ))}
+            </div>
+
+            {fullFileUpload && (
+                <Accordion
+                    disableGutters
+                    elevation={0}
+                    sx={{
+                        mt: 2,
+                        borderRadius: '8px !important',
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        bgcolor: customization.isDarkMode ? 'rgba(255,255,255,0.02)' : 'grey.50',
+                        '&:before': { display: 'none' },
+                        overflow: 'hidden'
+                    }}
+                >
+                    <AccordionSummary
+                        expandIcon={<ExpandMoreIcon sx={{ fontSize: '1.1rem', color: 'text.secondary' }} />}
+                        sx={{ minHeight: 40, px: 2, '& .MuiAccordionSummary-content': { my: 0.75 } }}
+                    >
+                        <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: 'text.secondary' }}>Advanced Settings</Typography>
+                    </AccordionSummary>
+                    <AccordionDetails sx={{ px: 2, pt: 0, pb: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        {/* PDF Processing */}
+                        {allowedFileTypes.includes('application/pdf') && (
+                            <Box>
+                                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: 'text.primary', mb: 0.75 }}>
+                                    PDF Processing
+                                </Typography>
+                                <FormControl disabled={!fullFileUpload}>
+                                    <RadioGroup name='pdf-usage' value={pdfUsage} onChange={handlePdfUsageChange}>
+                                        <FormControlLabel
+                                            value='perPage'
+                                            control={<Radio size='small' />}
+                                            label={<Typography sx={{ fontSize: '0.8125rem' }}>One document per page</Typography>}
+                                        />
+                                        <FormControlLabel
+                                            value='perFile'
+                                            control={<Radio size='small' />}
+                                            label={<Typography sx={{ fontSize: '0.8125rem' }}>One document per file</Typography>}
+                                        />
+                                    </RadioGroup>
+                                </FormControl>
+                            </Box>
+                        )}
+                    </AccordionDetails>
+                </Accordion>
+            )}
+
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', width: '100%', mt: 2 }}>
+                <StyledButton variant='contained' onClick={onSave} sx={{ minWidth: 100 }}>
+                    Save
+                </StyledButton>
             </Box>
-            {/* TODO: Allow selection of allowed file types*/}
-            <StyledButton style={{ marginBottom: 10, marginTop: 10 }} variant='contained' onClick={onSave}>
-                Save
-            </StyledButton>
         </>
     )
 }

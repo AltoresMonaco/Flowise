@@ -50,13 +50,15 @@ const settings = {
             title: 'Upsert History',
             type: 'item',
             url: '',
-            icon: icons.IconDatabaseExport
+            icon: icons.IconDatabaseExport,
+            permission: 'chatflows:view'
         },
         {
             id: 'chatflowConfiguration',
             title: 'Configuration',
             type: 'item',
             url: '',
+            permission: 'chatflows:config',
             icon: icons.IconAdjustmentsHorizontal
         },
         {
@@ -64,35 +66,40 @@ const settings = {
             title: 'Save As Template',
             type: 'item',
             url: '',
-            icon: icons.IconTemplate
+            icon: icons.IconTemplate,
+            permission: 'templates:flowexport'
         },
         {
             id: 'duplicateChatflow',
             title: 'Duplicate Chatflow',
             type: 'item',
             url: '',
-            icon: icons.IconCopy
+            icon: icons.IconCopy,
+            permission: 'chatflows:duplicate'
         },
         {
             id: 'loadChatflow',
             title: 'Load Chatflow',
             type: 'item',
             url: '',
-            icon: icons.IconFileUpload
+            icon: icons.IconFileUpload,
+            permission: 'chatflows:import'
         },
         {
             id: 'exportChatflow',
             title: 'Export Chatflow',
             type: 'item',
             url: '',
-            icon: icons.IconFileExport
+            icon: icons.IconFileExport,
+            permission: 'chatflows:export'
         },
         {
             id: 'deleteChatflow',
             title: 'Delete Chatflow',
             type: 'item',
             url: '',
-            icon: icons.IconTrash
+            icon: icons.IconTrash,
+            permission: 'chatflows:delete'
         }
     ]
 }

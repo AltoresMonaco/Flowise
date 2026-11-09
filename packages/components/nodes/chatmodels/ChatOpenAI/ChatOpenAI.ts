@@ -1,10 +1,10 @@
-import { ChatOpenAI as LangchainChatOpenAI, ChatOpenAIFields, OpenAIClient } from '@langchain/openai'
+import { ChatOpenAI as LangchainChatOpenAI, ChatOpenAIFields } from '@langchain/openai'
 import { BaseCache } from '@langchain/core/caches'
 import { ICommonObject, IMultiModalOption, INode, INodeData, INodeOptionsValue, INodeParams } from '../../../src/Interface'
-import { getBaseClasses, getCredentialData, getCredentialParam } from '../../../src/utils'
+import { getBaseClasses, getCredentialData, getCredentialParam, isReasoningModelOpenAI } from '../../../src/utils'
 import { ChatOpenAI } from './FlowiseChatOpenAI'
 import { getModels, MODEL_TYPE } from '../../../src/modelLoader'
-import { HttpsProxyAgent } from 'https-proxy-agent'
+import { OpenAI as OpenAIClient } from 'openai'
 
 class ChatOpenAI_ChatModels implements INode {
     label: string
@@ -19,9 +19,9 @@ class ChatOpenAI_ChatModels implements INode {
     inputs: INodeParams[]
 
     constructor() {
-        this.label = 'ChatOpenAI'
+        this.label = 'OpenAI'
         this.name = 'chatOpenAI'
-        this.version = 8.1
+        this.version = 8.4
         this.type = 'ChatOpenAI'
         this.icon = 'openai.svg'
         this.category = 'Chat Models'
@@ -60,6 +60,97 @@ class ChatOpenAI_ChatModels implements INode {
                 name: 'streaming',
                 type: 'boolean',
                 default: true,
+                optional: true,
+                additionalParams: true
+            },
+            {
+                label: 'Allow Image Uploads',
+                name: 'allowImageUploads',
+                type: 'boolean',
+                description:
+                    'Allow image input. Refer to the <a href="https://docs.flowiseai.com/using-flowise/uploads#image" target="_blank">docs</a> for more details.',
+                default: false,
+                optional: true
+            },
+            {
+                label: 'Reasoning',
+                description:
+                    'Whether the model supports reasoning. Turn it on for any reasoning model; gpt-5 and o-series models are detected automatically',
+                name: 'reasoning',
+                type: 'boolean',
+                default: false,
+                optional: true,
+                additionalParams: true
+            },
+            {
+                label: 'Reasoning Effort',
+                description:
+                    'Constrains effort on reasoning. Any effort other than None switches the model to the Responses API, which supports reasoning together with function tools',
+                name: 'reasoningEffort',
+                type: 'options',
+                options: [
+                    {
+                        label: 'None',
+                        name: 'none'
+                    },
+                    {
+                        label: 'Minimal',
+                        name: 'minimal'
+                    },
+                    {
+                        label: 'Low',
+                        name: 'low'
+                    },
+                    {
+                        label: 'Medium',
+                        name: 'medium'
+                    },
+                    {
+                        label: 'High',
+                        name: 'high'
+                    },
+                    {
+                        label: 'X-High',
+                        name: 'xhigh',
+                        description: 'X-High is supported for all models after gpt-5.1-codex-max'
+                    }
+                ],
+                additionalParams: true,
+                show: {
+                    reasoning: true
+                }
+            },
+            {
+                label: 'Reasoning Summary',
+                description: `A summary of the reasoning performed by the model. This can be useful for debugging and understanding the model's reasoning process`,
+                name: 'reasoningSummary',
+                type: 'options',
+                options: [
+                    {
+                        label: 'Auto',
+                        name: 'auto'
+                    },
+                    {
+                        label: 'Concise',
+                        name: 'concise'
+                    },
+                    {
+                        label: 'Detailed',
+                        name: 'detailed'
+                    }
+                ],
+                additionalParams: true,
+                show: {
+                    reasoning: true
+                }
+            },
+            {
+                label: 'Use Responses API',
+                description:
+                    'Call the OpenAI Responses API instead of Chat Completions. Turned on automatically when reasoning is on with an effort other than None',
+                name: 'useResponsesApi',
+                type: 'boolean',
+                default: false,
                 optional: true,
                 additionalParams: true
             },
@@ -122,79 +213,19 @@ class ChatOpenAI_ChatModels implements INode {
                 additionalParams: true
             },
             {
-                label: 'BasePath',
+                label: 'Base Path',
                 name: 'basepath',
                 type: 'string',
                 optional: true,
+                description: 'Override the default base URL for the API, e.g., "https://api.example.com/v2/',
                 additionalParams: true
             },
             {
-                label: 'Proxy Url',
-                name: 'proxyUrl',
-                type: 'string',
-                optional: true,
-                additionalParams: true
-            },
-            {
-                label: 'BaseOptions',
+                label: 'Base Options',
                 name: 'baseOptions',
                 type: 'json',
                 optional: true,
-                additionalParams: true
-            },
-            {
-                label: 'Allow Image Uploads',
-                name: 'allowImageUploads',
-                type: 'boolean',
-                description:
-                    'Allow image input. Refer to the <a href="https://docs.flowiseai.com/using-flowise/uploads#image" target="_blank">docs</a> for more details.',
-                default: false,
-                optional: true
-            },
-            {
-                label: 'Image Resolution',
-                description: 'This parameter controls the resolution in which the model views the image.',
-                name: 'imageResolution',
-                type: 'options',
-                options: [
-                    {
-                        label: 'Low',
-                        name: 'low'
-                    },
-                    {
-                        label: 'High',
-                        name: 'high'
-                    },
-                    {
-                        label: 'Auto',
-                        name: 'auto'
-                    }
-                ],
-                default: 'low',
-                optional: false,
-                additionalParams: true
-            },
-            {
-                label: 'Reasoning Effort',
-                description: 'Constrains effort on reasoning for reasoning models. Only applicable for o1 and o3 models.',
-                name: 'reasoningEffort',
-                type: 'options',
-                options: [
-                    {
-                        label: 'Low',
-                        name: 'low'
-                    },
-                    {
-                        label: 'Medium',
-                        name: 'medium'
-                    },
-                    {
-                        label: 'High',
-                        name: 'high'
-                    }
-                ],
-                default: 'medium',
-                optional: false,
+                description: 'Default headers to include with every request to the API.',
                 additionalParams: true
             }
         ]
@@ -219,12 +250,12 @@ class ChatOpenAI_ChatModels implements INode {
         const streaming = nodeData.inputs?.streaming as boolean
         const strictToolCalling = nodeData.inputs?.strictToolCalling as boolean
         const basePath = nodeData.inputs?.basepath as string
-        const proxyUrl = nodeData.inputs?.proxyUrl as string
         const baseOptions = nodeData.inputs?.baseOptions
-        const reasoningEffort = nodeData.inputs?.reasoningEffort as OpenAIClient.Chat.ChatCompletionReasoningEffort
-
+        const reasoningEffort = nodeData.inputs?.reasoningEffort as OpenAIClient.ReasoningEffort | null
+        const reasoningSummary = nodeData.inputs?.reasoningSummary as 'auto' | 'concise' | 'detailed' | null
         const allowImageUploads = nodeData.inputs?.allowImageUploads as boolean
-        const imageResolution = nodeData.inputs?.imageResolution as string
+        const reasoningEnabled = (nodeData.inputs?.reasoning as boolean) === true
+        const useResponsesApi = (nodeData.inputs?.useResponsesApi as boolean) === true
 
         if (nodeData.inputs?.credentialId) {
             nodeData.credential = nodeData.inputs?.credentialId
@@ -238,16 +269,11 @@ class ChatOpenAI_ChatModels implements INode {
             temperature: parseFloat(temperature),
             modelName,
             openAIApiKey,
+            apiKey: openAIApiKey,
             streaming: streaming ?? true
         }
 
-        if (modelName.includes('o3')) {
-            delete obj.temperature
-        }
-        if ((modelName.includes('o1') || modelName.includes('o3')) && reasoningEffort) {
-            obj.reasoningEffort = reasoningEffort
-        }
-        if (maxTokens) obj.maxTokens = parseInt(maxTokens, 10)
+        if (maxTokens) obj.maxCompletionTokens = parseInt(maxTokens, 10)
         if (topP) obj.topP = parseFloat(topP)
         if (frequencyPenalty) obj.frequencyPenalty = parseFloat(frequencyPenalty)
         if (presencePenalty) obj.presencePenalty = parseFloat(presencePenalty)
@@ -258,6 +284,24 @@ class ChatOpenAI_ChatModels implements INode {
             obj.stop = stopSequenceArray
         }
         if (strictToolCalling) obj.supportsStrictToolCalling = strictToolCalling
+
+        // Reasoning is opt-in per node so that new models work without a hard-coded name list.
+        if (reasoningEnabled || isReasoningModelOpenAI(modelName)) {
+            delete obj.temperature
+            delete obj.stop
+            const reasoning: OpenAIClient.Reasoning = {}
+            if (reasoningEffort) {
+                reasoning.effort = reasoningEffort
+            }
+            if (reasoningSummary) {
+                reasoning.summary = reasoningSummary
+            }
+            obj.reasoning = reasoning
+            // Chat Completions rejects function tools combined with a reasoning effort other than
+            // "none" (400 "Function tools with reasoning_effort are not supported"); the Responses API accepts both.
+            if (reasoningEnabled && reasoningEffort && reasoningEffort !== 'none') obj.useResponsesApi = true
+        }
+        if (useResponsesApi) obj.useResponsesApi = true
 
         let parsedBaseOptions: any | undefined = undefined
 
@@ -276,22 +320,15 @@ class ChatOpenAI_ChatModels implements INode {
             }
         }
 
-        if (proxyUrl) {
-            obj.configuration = {
-                ...obj?.configuration,
-                httpAgent: new HttpsProxyAgent(proxyUrl)
-            }
-        }
-
         const multiModalOption: IMultiModalOption = {
             image: {
-                allowImageUploads: allowImageUploads ?? false,
-                imageResolution
+                allowImageUploads: allowImageUploads ?? false
             }
         }
 
         const model = new ChatOpenAI(nodeData.id, obj)
         model.setMultiModalOption(multiModalOption)
+
         return model
     }
 }

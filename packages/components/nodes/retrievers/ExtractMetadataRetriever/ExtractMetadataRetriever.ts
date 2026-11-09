@@ -2,9 +2,8 @@ import { Document } from '@langchain/core/documents'
 import { VectorStore, VectorStoreRetriever, VectorStoreRetrieverInput } from '@langchain/core/vectorstores'
 import { INode, INodeData, INodeParams, INodeOutputsValue } from '../../../src/Interface'
 import { handleEscapeCharacters } from '../../../src'
-import { z } from 'zod'
-import { convertStructuredSchemaToZod, ExtractTool } from '../../sequentialagents/commonUtils'
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai'
+import { z } from 'zod/v3'
+import { convertStructuredSchemaToZod } from '../../sequentialagents/commonUtils'
 
 const queryPrefix = 'query'
 const defaultPrompt = `Extract keywords from the query: {{${queryPrefix}}}`
@@ -31,7 +30,6 @@ class ExtractMetadataRetriever_Retrievers implements INode {
         this.category = 'Retrievers'
         this.description = 'Extract keywords/metadata from the query and use it to filter documents'
         this.baseClasses = [this.type, 'BaseRetriever']
-        this.badge = 'BETA'
         this.inputs = [
             {
                 label: 'Vector Store',
@@ -127,19 +125,10 @@ class ExtractMetadataRetriever_Retrievers implements INode {
             try {
                 const structuredOutput = z.object(convertStructuredSchemaToZod(llmStructuredOutput))
 
-                if (llm instanceof ChatGoogleGenerativeAI) {
-                    const tool = new ExtractTool({
-                        schema: structuredOutput
-                    })
-                    // @ts-ignore
-                    const modelWithTool = llm.bind({
-                        tools: [tool]
-                    }) as any
-                    llm = modelWithTool
-                } else {
-                    // @ts-ignore
-                    llm = llm.withStructuredOutput(structuredOutput)
-                }
+                // @ts-ignore
+                llm = llm.withStructuredOutput(structuredOutput, {
+                    method: 'functionCalling'
+                })
             } catch (exception) {
                 console.error(exception)
             }

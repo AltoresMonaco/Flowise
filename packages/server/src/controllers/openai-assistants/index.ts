@@ -5,6 +5,10 @@ import contentDisposition from 'content-disposition'
 import { InternalFlowiseError } from '../../errors/internalFlowiseError'
 import { StatusCodes } from 'http-status-codes'
 import { streamStorageFile } from 'flowise-components'
+import { getRunningExpressApp } from '../../utils/getRunningExpressApp'
+import { ChatFlow } from '../../database/entities/ChatFlow'
+import { Workspace } from '../../enterprise/database/entities/workspace.entity'
+import { validateFileMimeTypeAndExtensionMatch } from '../../utils/fileValidation'
 
 // List available assistants
 const getAllOpenaiAssistants = async (req: Request, res: Response, next: NextFunction) => {
@@ -15,7 +19,14 @@ const getAllOpenaiAssistants = async (req: Request, res: Response, next: NextFun
                 `Error: openaiAssistantsController.getAllOpenaiAssistants - credential not provided!`
             )
         }
-        const apiResponse = await openaiAssistantsService.getAllOpenaiAssistants(req.query.credential as string)
+        const workspaceId = req.user?.activeWorkspaceId
+        if (!workspaceId) {
+            throw new InternalFlowiseError(
+                StatusCodes.NOT_FOUND,
+                `Error: openaiAssistantsController.getAllOpenaiAssistants - workspace ${workspaceId} not found!`
+            )
+        }
+        const apiResponse = await openaiAssistantsService.getAllOpenaiAssistants(req.query.credential as string, workspaceId)
         return res.json(apiResponse)
     } catch (error) {
         next(error)
@@ -37,7 +48,18 @@ const getSingleOpenaiAssistant = async (req: Request, res: Response, next: NextF
                 `Error: openaiAssistantsController.getSingleOpenaiAssistant - credential not provided!`
             )
         }
-        const apiResponse = await openaiAssistantsService.getSingleOpenaiAssistant(req.query.credential as string, req.params.id)
+        const workspaceId = req.user?.activeWorkspaceId
+        if (!workspaceId) {
+            throw new InternalFlowiseError(
+                StatusCodes.NOT_FOUND,
+                `Error: openaiAssistantsController.getSingleOpenaiAssistant - workspace ${workspaceId} not found!`
+            )
+        }
+        const apiResponse = await openaiAssistantsService.getSingleOpenaiAssistant(
+            req.query.credential as string,
+            req.params.id,
+            workspaceId
+        )
         return res.json(apiResponse)
     } catch (error) {
         next(error)
@@ -50,11 +72,29 @@ const getFileFromAssistant = async (req: Request, res: Response, next: NextFunct
         if (!req.body.chatflowId || !req.body.chatId || !req.body.fileName) {
             return res.status(500).send(`Invalid file path`)
         }
+        const appServer = getRunningExpressApp()
         const chatflowId = req.body.chatflowId as string
         const chatId = req.body.chatId as string
         const fileName = req.body.fileName as string
+
+        // This can be public API, so we can only get orgId from the chatflow
+        const chatflow = await appServer.AppDataSource.getRepository(ChatFlow).findOneBy({
+            id: chatflowId
+        })
+        if (!chatflow) {
+            throw new InternalFlowiseError(StatusCodes.NOT_FOUND, `Chatflow ${chatflowId} not found`)
+        }
+        const chatflowWorkspaceId = chatflow.workspaceId
+        const workspace = await appServer.AppDataSource.getRepository(Workspace).findOneBy({
+            id: chatflowWorkspaceId
+        })
+        if (!workspace) {
+            throw new InternalFlowiseError(StatusCodes.NOT_FOUND, `Workspace ${chatflowWorkspaceId} not found`)
+        }
+        const orgId = workspace.organizationId as string
+
         res.setHeader('Content-Disposition', contentDisposition(fileName))
-        const fileStream = await streamStorageFile(chatflowId, chatId, fileName)
+        const fileStream = await streamStorageFile(chatflowId, chatId, fileName, orgId)
 
         if (!fileStream) throw new InternalFlowiseError(StatusCodes.INTERNAL_SERVER_ERROR, `Error: getFileFromAssistant`)
 
@@ -76,6 +116,13 @@ const uploadAssistantFiles = async (req: Request, res: Response, next: NextFunct
                 `Error: openaiAssistantsVectorStoreController.uploadFilesToAssistantVectorStore - credential not provided!`
             )
         }
+        const workspaceId = req.user?.activeWorkspaceId
+        if (!workspaceId) {
+            throw new InternalFlowiseError(
+                StatusCodes.NOT_FOUND,
+                `Error: openaiAssistantsController.uploadAssistantFiles - workspace ${workspaceId} not found!`
+            )
+        }
         const files = req.files ?? []
         const uploadFiles: { filePath: string; fileName: string }[] = []
 
@@ -83,6 +130,10 @@ const uploadAssistantFiles = async (req: Request, res: Response, next: NextFunct
             for (const file of files) {
                 // Address file name with special characters: https://github.com/expressjs/multer/issues/1104
                 file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8')
+
+                // Validate file extension, MIME type, and content to prevent security vulnerabilities
+                validateFileMimeTypeAndExtensionMatch(file.originalname, file.mimetype)
+
                 uploadFiles.push({
                     filePath: file.path ?? file.key,
                     fileName: file.originalname
@@ -90,7 +141,7 @@ const uploadAssistantFiles = async (req: Request, res: Response, next: NextFunct
             }
         }
 
-        const apiResponse = await openaiAssistantsService.uploadFilesToAssistant(req.query.credential as string, uploadFiles)
+        const apiResponse = await openaiAssistantsService.uploadFilesToAssistant(req.query.credential as string, uploadFiles, workspaceId)
         return res.json(apiResponse)
     } catch (error) {
         next(error)

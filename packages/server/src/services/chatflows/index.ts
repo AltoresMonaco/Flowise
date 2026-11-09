@@ -1,21 +1,50 @@
+import { randomBytes } from 'crypto'
 import { ICommonObject, removeFolderFromStorage } from 'flowise-components'
 import { StatusCodes } from 'http-status-codes'
-import { QueryRunner } from 'typeorm'
-import { ChatflowType, IReactFlowObject } from '../../Interface'
+import { Brackets, In, QueryRunner } from 'typeorm'
+import { validate as isValidUUID } from 'uuid'
+import { ChatflowType, IReactFlowObject, ScheduleInputMode, StartInputType } from '../../Interface'
 import { FLOWISE_COUNTER_STATUS, FLOWISE_METRIC_COUNTERS } from '../../Interface.Metrics'
-import { ChatFlow } from '../../database/entities/ChatFlow'
+import { UsageCacheManager } from '../../UsageCacheManager'
+import { ChatFlow, EnumChatflowType } from '../../database/entities/ChatFlow'
 import { ChatMessage } from '../../database/entities/ChatMessage'
 import { ChatMessageFeedback } from '../../database/entities/ChatMessageFeedback'
+import { ScheduleTriggerType } from '../../database/entities/ScheduleRecord'
 import { UpsertHistory } from '../../database/entities/UpsertHistory'
+import { Workspace } from '../../enterprise/database/entities/workspace.entity'
+import { getWorkspaceSearchOptions } from '../../enterprise/utils/ControllerServiceUtils'
 import { InternalFlowiseError } from '../../errors/internalFlowiseError'
 import { getErrorMessage } from '../../errors/utils'
+import { ScheduleBeat } from '../../schedule/ScheduleBeat'
 import documentStoreService from '../../services/documentstore'
-import { constructGraphs, getAppVersion, getEndingNodes, getTelemetryFlowObj, isFlowValidForStream } from '../../utils'
+import scheduleService from '../../services/schedule'
+import {
+    constructGraphs,
+    decryptCredentialData,
+    encryptCredentialData,
+    getAppVersion,
+    getEndingNodes,
+    getTelemetryFlowObj,
+    isFlowValidForStream
+} from '../../utils'
 import { containsBase64File, updateFlowDataWithFilePaths } from '../../utils/fileRepository'
+import { sanitizeAllowedUploadMimeTypesFromConfig } from '../../utils/fileValidation'
 import { getRunningExpressApp } from '../../utils/getRunningExpressApp'
 import { utilGetUploadsConfig } from '../../utils/getUploadsConfig'
 import logger from '../../utils/logger'
-import { validate } from 'uuid'
+import { updateStorageUsage } from '../../utils/quotaUsage'
+import { sanitizeFlowDataForPublicEndpoint } from '../../utils/sanitizeFlowData'
+
+export const enum ChatflowErrorMessage {
+    INVALID_CHATFLOW_TYPE = 'Invalid Chatflow Type',
+    INVALID_CHATFLOW_ID = 'Invalid Chatflow ID',
+    WORKSPACE_ID_REQUIRED = 'Workspace ID is required'
+}
+
+export function validateChatflowType(type: ChatflowType | undefined) {
+    if (!Object.values(EnumChatflowType).includes(type as EnumChatflowType))
+        throw new InternalFlowiseError(StatusCodes.BAD_REQUEST, ChatflowErrorMessage.INVALID_CHATFLOW_TYPE)
+}
 
 // Check if chatflow valid for streaming
 const checkIfChatflowIsValidForStreaming = async (chatflowId: string): Promise<any> => {
@@ -36,6 +65,10 @@ const checkIfChatflowIsValidForStreaming = async (chatflowId: string): Promise<a
             if (chatflowConfig?.postProcessing?.enabled === true) {
                 return { isStreaming: false }
             }
+        }
+
+        if (chatflow.type === 'AGENTFLOW') {
+            return { isStreaming: true }
         }
 
         /*** Get Ending Node with Directed Graph  ***/
@@ -86,25 +119,47 @@ const checkIfChatflowIsValidForUploads = async (chatflowId: string): Promise<any
     }
 }
 
-const deleteChatflow = async (chatflowId: string): Promise<any> => {
+const deleteChatflow = async (
+    chatflowId: string,
+    orgId: string,
+    workspaceId: string,
+    userPermittedTypes: EnumChatflowType[]
+): Promise<any> => {
     try {
         const appServer = getRunningExpressApp()
+
+        const chatflow = await getChatflowById(chatflowId, workspaceId)
+        if (!userPermittedTypes.includes(chatflow.type as EnumChatflowType))
+            throw new InternalFlowiseError(StatusCodes.FORBIDDEN, `You do not have permission to delete this chatflow type`)
+
         const dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).delete({ id: chatflowId })
+
+        // Update document store usage
+        await documentStoreService.updateDocumentStoreUsage(chatflowId, undefined, workspaceId)
+
+        // Delete all chat messages
+        await appServer.AppDataSource.getRepository(ChatMessage).delete({ chatflowid: chatflowId })
+
+        // Delete all chat feedback
+        await appServer.AppDataSource.getRepository(ChatMessageFeedback).delete({ chatflowid: chatflowId })
+
+        // Delete all upsert history
+        await appServer.AppDataSource.getRepository(UpsertHistory).delete({ chatflowid: chatflowId })
+
+        // delete schedules related to the chatflow if it's an agentflow
+        if (chatflow.type === EnumChatflowType.AGENTFLOW) {
+            const existingRecord = await scheduleService.deleteScheduleForTarget(chatflow.id, ScheduleTriggerType.AGENTFLOW, workspaceId)
+            if (existingRecord) {
+                await ScheduleBeat.getInstance().onScheduleChanged(existingRecord.id, 'delete')
+            }
+        }
+
         try {
             // Delete all uploads corresponding to this chatflow
-            await removeFolderFromStorage(chatflowId)
-            await documentStoreService.updateDocumentStoreUsage(chatflowId, undefined)
-
-            // Delete all chat messages
-            await appServer.AppDataSource.getRepository(ChatMessage).delete({ chatflowid: chatflowId })
-
-            // Delete all chat feedback
-            await appServer.AppDataSource.getRepository(ChatMessageFeedback).delete({ chatflowid: chatflowId })
-
-            // Delete all upsert history
-            await appServer.AppDataSource.getRepository(UpsertHistory).delete({ chatflowid: chatflowId })
+            const { totalSize } = await removeFolderFromStorage(orgId, chatflowId)
+            await updateStorageUsage(orgId, workspaceId, totalSize, appServer.usageCacheManager)
         } catch (e) {
-            logger.error(`[server]: Error deleting file storage for chatflow ${chatflowId}: ${e}`)
+            logger.error(`[server]: Error deleting file storage for chatflow ${chatflowId}`)
         }
         return dbResponse
     } catch (error) {
@@ -115,19 +170,36 @@ const deleteChatflow = async (chatflowId: string): Promise<any> => {
     }
 }
 
-const getAllChatflows = async (type?: ChatflowType): Promise<ChatFlow[]> => {
+const getAllChatflows = async (type?: ChatflowType, workspaceId?: string, page: number = -1, limit: number = -1) => {
     try {
         const appServer = getRunningExpressApp()
-        const dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).find()
+
+        const queryBuilder = appServer.AppDataSource.getRepository(ChatFlow)
+            .createQueryBuilder('chat_flow')
+            .orderBy('chat_flow.updatedDate', 'DESC')
+
+        if (page > 0 && limit > 0) {
+            queryBuilder.skip((page - 1) * limit)
+            queryBuilder.take(limit)
+        }
         if (type === 'MULTIAGENT') {
-            return dbResponse.filter((chatflow) => chatflow.type === 'MULTIAGENT')
+            queryBuilder.andWhere('chat_flow.type = :type', { type: 'MULTIAGENT' })
+        } else if (type === 'AGENTFLOW') {
+            queryBuilder.andWhere('chat_flow.type = :type', { type: 'AGENTFLOW' })
         } else if (type === 'ASSISTANT') {
-            return dbResponse.filter((chatflow) => chatflow.type === 'ASSISTANT')
+            queryBuilder.andWhere('chat_flow.type = :type', { type: 'ASSISTANT' })
         } else if (type === 'CHATFLOW') {
             // fetch all chatflows that are not agentflow
-            return dbResponse.filter((chatflow) => chatflow.type === 'CHATFLOW' || !chatflow.type)
+            queryBuilder.andWhere('chat_flow.type = :type', { type: 'CHATFLOW' })
         }
-        return dbResponse
+        if (workspaceId) queryBuilder.andWhere('chat_flow.workspaceId = :workspaceId', { workspaceId })
+        const [data, total] = await queryBuilder.getManyAndCount()
+
+        if (page > 0 && limit > 0) {
+            return { data, total }
+        } else {
+            return data
+        }
     } catch (error) {
         throw new InternalFlowiseError(
             StatusCodes.INTERNAL_SERVER_ERROR,
@@ -136,16 +208,61 @@ const getAllChatflows = async (type?: ChatflowType): Promise<ChatFlow[]> => {
     }
 }
 
-const getChatflowByApiKey = async (apiKeyId: string, keyonly?: unknown): Promise<any> => {
+async function getAllChatflowsCountByOrganization(type: ChatflowType, organizationId: string): Promise<number> {
+    try {
+        const appServer = getRunningExpressApp()
+
+        const workspaces = await appServer.AppDataSource.getRepository(Workspace).findBy({ organizationId })
+        const workspaceIds = workspaces.map((workspace) => workspace.id)
+        const chatflowsCount = await appServer.AppDataSource.getRepository(ChatFlow).countBy({
+            type,
+            workspaceId: In(workspaceIds)
+        })
+
+        return chatflowsCount
+    } catch (error) {
+        throw new InternalFlowiseError(
+            StatusCodes.INTERNAL_SERVER_ERROR,
+            `Error: chatflowsService.getAllChatflowsCountByOrganization - ${getErrorMessage(error)}`
+        )
+    }
+}
+
+const getAllChatflowsCount = async (type?: ChatflowType, workspaceId?: string): Promise<number> => {
+    try {
+        const appServer = getRunningExpressApp()
+        if (type) {
+            const dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).countBy({
+                type,
+                ...getWorkspaceSearchOptions(workspaceId)
+            })
+            return dbResponse
+        }
+        const dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).countBy(getWorkspaceSearchOptions(workspaceId))
+        return dbResponse
+    } catch (error) {
+        throw new InternalFlowiseError(
+            StatusCodes.INTERNAL_SERVER_ERROR,
+            `Error: chatflowsService.getAllChatflowsCount - ${getErrorMessage(error)}`
+        )
+    }
+}
+
+const getChatflowByApiKey = async (apiKeyId: string, workspaceId: string, keyonly?: unknown): Promise<any> => {
     try {
         // Here we only get chatflows that are bounded by the apikeyid and chatflows that are not bounded by any apikey
         const appServer = getRunningExpressApp()
         let query = appServer.AppDataSource.getRepository(ChatFlow)
             .createQueryBuilder('cf')
-            .where('cf.apikeyid = :apikeyid', { apikeyid: apiKeyId })
-        if (keyonly === undefined) {
-            query = query.orWhere('cf.apikeyid IS NULL').orWhere('cf.apikeyid = ""')
-        }
+            .where('cf.workspaceId = :workspaceId', { workspaceId })
+            .andWhere(
+                new Brackets((qb) => {
+                    qb.where('cf.apikeyid = :apikeyid', { apikeyid: apiKeyId })
+                    if (keyonly === undefined) {
+                        qb.orWhere('cf.apikeyid IS NULL').orWhere('cf.apikeyid = ""')
+                    }
+                })
+            )
 
         const dbResponse = await query.orderBy('cf.name', 'ASC').getMany()
         if (dbResponse.length < 1) {
@@ -160,17 +277,26 @@ const getChatflowByApiKey = async (apiKeyId: string, keyonly?: unknown): Promise
     }
 }
 
-const getChatflowById = async (chatflowId: string): Promise<any> => {
+const getChatflowById = async (chatflowId: string, workspaceId?: string): Promise<any> => {
     try {
+        if (!isValidUUID(chatflowId)) {
+            throw new InternalFlowiseError(StatusCodes.BAD_REQUEST, ChatflowErrorMessage.INVALID_CHATFLOW_ID)
+        }
         const appServer = getRunningExpressApp()
-        const dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).findOneBy({
-            id: chatflowId
+        const dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).findOne({
+            where: {
+                id: chatflowId,
+                ...(workspaceId ? { workspaceId } : {})
+            }
         })
         if (!dbResponse) {
             throw new InternalFlowiseError(StatusCodes.NOT_FOUND, `Chatflow ${chatflowId} not found in the database!`)
         }
         return dbResponse
     } catch (error) {
+        if (error instanceof InternalFlowiseError) {
+            throw error
+        }
         throw new InternalFlowiseError(
             StatusCodes.INTERNAL_SERVER_ERROR,
             `Error: chatflowsService.getChatflowById - ${getErrorMessage(error)}`
@@ -178,149 +304,257 @@ const getChatflowById = async (chatflowId: string): Promise<any> => {
     }
 }
 
-const saveChatflow = async (newChatFlow: ChatFlow): Promise<any> => {
-    try {
-        const appServer = getRunningExpressApp()
-        let dbResponse: ChatFlow
-        if (containsBase64File(newChatFlow)) {
-            // we need a 2-step process, as we need to save the chatflow first and then update the file paths
-            // this is because we need the chatflow id to create the file paths
-
-            // step 1 - save with empty flowData
-            const incomingFlowData = newChatFlow.flowData
-            newChatFlow.flowData = JSON.stringify({})
-            const chatflow = appServer.AppDataSource.getRepository(ChatFlow).create(newChatFlow)
-            const step1Results = await appServer.AppDataSource.getRepository(ChatFlow).save(chatflow)
-
-            // step 2 - convert base64 to file paths and update the chatflow
-            step1Results.flowData = await updateFlowDataWithFilePaths(step1Results.id, incomingFlowData)
-            await _checkAndUpdateDocumentStoreUsage(step1Results)
-            dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).save(step1Results)
-        } else {
-            const chatflow = appServer.AppDataSource.getRepository(ChatFlow).create(newChatFlow)
-            dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).save(chatflow)
-        }
-        await appServer.telemetry.sendTelemetry('chatflow_created', {
-            version: await getAppVersion(),
-            chatflowId: dbResponse.id,
-            flowGraph: getTelemetryFlowObj(JSON.parse(dbResponse.flowData)?.nodes, JSON.parse(dbResponse.flowData)?.edges)
-        })
-        appServer.metricsProvider?.incrementCounter(
-            dbResponse?.type === 'MULTIAGENT' ? FLOWISE_METRIC_COUNTERS.AGENTFLOW_CREATED : FLOWISE_METRIC_COUNTERS.CHATFLOW_CREATED,
-            { status: FLOWISE_COUNTER_STATUS.SUCCESS }
-        )
-
-        return dbResponse
-    } catch (error) {
-        throw new InternalFlowiseError(
-            StatusCodes.INTERNAL_SERVER_ERROR,
-            `Error: chatflowsService.saveChatflow - ${getErrorMessage(error)}`
-        )
+/** Resolves a chatflow only if it belongs to the given workspace; rejects when workspaceId is missing (prevents unscoped lookup). */
+const getChatflowByIdForWorkspace = async (chatflowId: string, workspaceId: string | undefined): Promise<any> => {
+    if (!workspaceId) {
+        throw new InternalFlowiseError(StatusCodes.BAD_REQUEST, ChatflowErrorMessage.WORKSPACE_ID_REQUIRED)
     }
+    return getChatflowById(chatflowId, workspaceId)
 }
 
-const importChatflows = async (newChatflows: Partial<ChatFlow>[], queryRunner?: QueryRunner): Promise<any> => {
+/** Ensures every id exists as a chatflow in workspaceId. One DB query; pass queryRunner when inside a transaction for consistent reads. */
+const assertChatflowIdsInWorkspace = async (chatflowIds: string[], workspaceId: string, queryRunner?: QueryRunner): Promise<void> => {
     try {
-        for (const data of newChatflows) {
-            if (data.id && !validate(data.id)) {
-                throw new InternalFlowiseError(StatusCodes.PRECONDITION_FAILED, `Error: importChatflows - invalid id!`)
+        if (chatflowIds.length === 0) return
+        for (const id of chatflowIds) {
+            if (!isValidUUID(id)) {
+                throw new InternalFlowiseError(StatusCodes.BAD_REQUEST, ChatflowErrorMessage.INVALID_CHATFLOW_ID)
             }
         }
-
         const appServer = getRunningExpressApp()
-        const repository = queryRunner ? queryRunner.manager.getRepository(ChatFlow) : appServer.AppDataSource.getRepository(ChatFlow)
-
-        // step 1 - check whether file chatflows array is zero
-        if (newChatflows.length == 0) return
-
-        // step 2 - check whether ids are duplicate in database
-        let ids = '('
-        let count: number = 0
-        const lastCount = newChatflows.length - 1
-        newChatflows.forEach((newChatflow) => {
-            ids += `'${newChatflow.id}'`
-            if (lastCount != count) ids += ','
-            if (lastCount == count) ids += ')'
-            count += 1
+        const manager = queryRunner?.manager ?? appServer.AppDataSource.manager
+        const found = await manager.getRepository(ChatFlow).find({
+            where: { id: In(chatflowIds), workspaceId },
+            select: ['id']
         })
-
-        const selectResponse = await repository.createQueryBuilder('cf').select('cf.id').where(`cf.id IN ${ids}`).getMany()
-        const foundIds = selectResponse.map((response) => {
-            return response.id
-        })
-
-        // step 3 - remove ids that are only duplicate
-        const prepChatflows: Partial<ChatFlow>[] = newChatflows.map((newChatflow) => {
-            let id: string = ''
-            if (newChatflow.id) id = newChatflow.id
-            let flowData: string = ''
-            if (newChatflow.flowData) flowData = newChatflow.flowData
-            if (foundIds.includes(id)) {
-                newChatflow.id = undefined
-                newChatflow.name += ' (1)'
-            }
-            newChatflow.flowData = JSON.stringify(JSON.parse(flowData))
-            return newChatflow
-        })
-
-        // step 4 - transactional insert array of entities
-        const insertResponse = await repository.insert(prepChatflows)
-
-        return insertResponse
-    } catch (error) {
-        throw new InternalFlowiseError(
-            StatusCodes.INTERNAL_SERVER_ERROR,
-            `Error: chatflowsService.saveChatflows - ${getErrorMessage(error)}`
-        )
-    }
-}
-
-const updateChatflow = async (chatflow: ChatFlow, updateChatFlow: ChatFlow): Promise<any> => {
-    try {
-        const appServer = getRunningExpressApp()
-        if (updateChatFlow.flowData && containsBase64File(updateChatFlow)) {
-            updateChatFlow.flowData = await updateFlowDataWithFilePaths(chatflow.id, updateChatFlow.flowData)
-        }
-        const newDbChatflow = appServer.AppDataSource.getRepository(ChatFlow).merge(chatflow, updateChatFlow)
-        await _checkAndUpdateDocumentStoreUsage(newDbChatflow)
-        const dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).save(newDbChatflow)
-
-        return dbResponse
-    } catch (error) {
-        throw new InternalFlowiseError(
-            StatusCodes.INTERNAL_SERVER_ERROR,
-            `Error: chatflowsService.updateChatflow - ${getErrorMessage(error)}`
-        )
-    }
-}
-
-// Get specific chatflow via id (PUBLIC endpoint, used when sharing chatbot link)
-const getSinglePublicChatflow = async (chatflowId: string): Promise<any> => {
-    try {
-        const appServer = getRunningExpressApp()
-        const dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).findOneBy({
-            id: chatflowId
-        })
-        if (dbResponse && dbResponse.isPublic) {
-            return dbResponse
-        } else if (dbResponse && !dbResponse.isPublic) {
-            throw new InternalFlowiseError(StatusCodes.UNAUTHORIZED, `Unauthorized`)
-        }
-        throw new InternalFlowiseError(StatusCodes.NOT_FOUND, `Chatflow ${chatflowId} not found`)
-    } catch (error) {
-        if (error instanceof InternalFlowiseError && error.statusCode === StatusCodes.UNAUTHORIZED) {
-            throw error
-        } else {
+        if (found.length !== chatflowIds.length) {
             throw new InternalFlowiseError(
-                StatusCodes.INTERNAL_SERVER_ERROR,
-                `Error: chatflowsService.getSinglePublicChatflow - ${getErrorMessage(error)}`
+                StatusCodes.NOT_FOUND,
+                'Error: chatflowsService.assertChatflowIdsInWorkspace - one or more chatflows were not found in the workspace!'
             )
         }
+    } catch (error) {
+        if (error instanceof InternalFlowiseError) {
+            throw error
+        }
+        throw new InternalFlowiseError(
+            StatusCodes.INTERNAL_SERVER_ERROR,
+            `Error: chatflowsService.assertChatflowIdsInWorkspace - ${getErrorMessage(error)}`
+        )
     }
+}
+
+const saveChatflow = async (
+    newChatFlow: ChatFlow,
+    orgId: string,
+    workspaceId: string,
+    subscriptionId: string,
+    usageCacheManager: UsageCacheManager
+): Promise<any> => {
+    validateChatflowType(newChatFlow.type)
+    const appServer = getRunningExpressApp()
+
+    let dbResponse: ChatFlow
+    if (containsBase64File(newChatFlow)) {
+        // we need a 2-step process, as we need to save the chatflow first and then update the file paths
+        // this is because we need the chatflow id to create the file paths
+
+        // step 1 - save with empty flowData
+        const incomingFlowData = newChatFlow.flowData
+        newChatFlow.flowData = JSON.stringify({})
+        const chatflow = appServer.AppDataSource.getRepository(ChatFlow).create(newChatFlow)
+        const step1Results = await appServer.AppDataSource.getRepository(ChatFlow).save(chatflow)
+
+        // step 2 - convert base64 to file paths and update the chatflow
+        step1Results.flowData = await updateFlowDataWithFilePaths(
+            step1Results.id,
+            incomingFlowData,
+            orgId,
+            workspaceId,
+            subscriptionId,
+            usageCacheManager
+        )
+        await _checkAndUpdateDocumentStoreUsage(step1Results, newChatFlow.workspaceId)
+        dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).save(step1Results)
+    } else {
+        const chatflow = appServer.AppDataSource.getRepository(ChatFlow).create(newChatFlow)
+        dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).save(chatflow)
+    }
+
+    // Check if the flow is agentflow and if it has a schedule node, if yes then notify the beat to sync the schedule
+    if (dbResponse.type === EnumChatflowType.AGENTFLOW) {
+        /*** Get chatflows and prepare data  ***/
+        const flowData = dbResponse.flowData
+        const parsedFlowData: IReactFlowObject = JSON.parse(flowData)
+        const nodes = (parsedFlowData.nodes || []).filter((node) => node.data.name !== 'stickyNoteAgentflow')
+        const startNode = nodes.find((node) => node.data.name === 'startAgentflow')
+        const startInputType = startNode?.data?.inputs?.startInputType as StartInputType | undefined
+        if (startInputType === 'scheduleInput') {
+            const scheduleInputMode = startNode?.data?.inputs?.scheduleInputMode as ScheduleInputMode | undefined
+            if (!scheduleInputMode) {
+                throw new InternalFlowiseError(
+                    StatusCodes.BAD_REQUEST,
+                    'Schedule Input Mode is required on the Start node when Start Input Type is Schedule.'
+                )
+            }
+            const resolvedCron = scheduleService.resolveScheduleCron(startNode?.data?.inputs || {})
+            const scheduleTimezone = startNode?.data?.inputs?.scheduleTimezone || 'UTC'
+            const scheduleDefaultInput = startNode?.data?.inputs?.scheduleDefaultInput || ''
+            const scheduleFormDefaultsRaw = startNode?.data?.inputs?.scheduleFormDefaults
+            const scheduleFormDefaults =
+                scheduleInputMode === 'form'
+                    ? typeof scheduleFormDefaultsRaw === 'string'
+                        ? scheduleFormDefaultsRaw
+                        : JSON.stringify(scheduleFormDefaultsRaw ?? {})
+                    : undefined
+            const scheduleEndDate = startNode?.data?.inputs?.scheduleEndDate ? new Date(startNode.data.inputs.scheduleEndDate) : undefined
+            const enabled = scheduleService.canScheduleEnable(startNode?.data?.inputs ?? {})
+            const record = await scheduleService.createOrUpdateSchedule({
+                triggerType: ScheduleTriggerType.AGENTFLOW,
+                targetId: dbResponse.id,
+                nodeId: startNode?.id,
+                cronExpression: resolvedCron.cronExpression || '',
+                timezone: scheduleTimezone,
+                enabled: enabled,
+                scheduleInputMode,
+                defaultInput: scheduleInputMode === 'text' ? scheduleDefaultInput : '',
+                defaultForm: scheduleFormDefaults,
+                workspaceId,
+                endDate: scheduleEndDate
+            })
+            if (enabled) {
+                // Notify the beat to sync the schedule
+                await ScheduleBeat.getInstance().onScheduleChanged(record.id, 'upsert')
+            }
+        }
+    }
+
+    const productId = await appServer.identityManager.getProductIdFromSubscription(subscriptionId)
+
+    await appServer.telemetry.sendTelemetry(
+        'chatflow_created',
+        {
+            version: await getAppVersion(),
+            chatflowId: dbResponse.id,
+            flowGraph: getTelemetryFlowObj(JSON.parse(dbResponse.flowData)?.nodes, JSON.parse(dbResponse.flowData)?.edges),
+            productId,
+            subscriptionId
+        },
+        orgId
+    )
+
+    appServer.metricsProvider?.incrementCounter(
+        dbResponse?.type === 'MULTIAGENT' ? FLOWISE_METRIC_COUNTERS.AGENTFLOW_CREATED : FLOWISE_METRIC_COUNTERS.CHATFLOW_CREATED,
+        { status: FLOWISE_COUNTER_STATUS.SUCCESS }
+    )
+
+    return dbResponse
+}
+
+const updateChatflow = async (
+    chatflow: ChatFlow,
+    updateChatFlow: ChatFlow,
+    orgId: string,
+    workspaceId: string,
+    subscriptionId: string
+): Promise<any> => {
+    const appServer = getRunningExpressApp()
+    if (updateChatFlow.flowData && containsBase64File(updateChatFlow)) {
+        updateChatFlow.flowData = await updateFlowDataWithFilePaths(
+            chatflow.id,
+            updateChatFlow.flowData,
+            orgId,
+            workspaceId,
+            subscriptionId,
+            appServer.usageCacheManager
+        )
+    }
+    if (updateChatFlow.type || updateChatFlow.type === '') {
+        validateChatflowType(updateChatFlow.type)
+    } else {
+        updateChatFlow.type = chatflow.type
+    }
+    if (updateChatFlow.chatbotConfig) {
+        try {
+            const parsed = JSON.parse(updateChatFlow.chatbotConfig) as ICommonObject
+            if (parsed?.fullFileUpload?.allowedUploadFileTypes !== undefined) {
+                const current = parsed.fullFileUpload.allowedUploadFileTypes
+                const sanitized = sanitizeAllowedUploadMimeTypesFromConfig(typeof current === 'string' ? current : String(current ?? ''))
+                parsed.fullFileUpload.allowedUploadFileTypes = sanitized
+                updateChatFlow.chatbotConfig = JSON.stringify(parsed)
+            }
+        } catch (error) {
+            const message = getErrorMessage(error)
+            logger.error(`[server]: Invalid chatbotConfig JSON in updateChatflow: ${message}`)
+            throw new InternalFlowiseError(StatusCodes.BAD_REQUEST, `Invalid chatbotConfig: ${message}`)
+        }
+    }
+    const newDbChatflow = appServer.AppDataSource.getRepository(ChatFlow).merge(chatflow, updateChatFlow)
+    newDbChatflow.workspaceId = workspaceId // defense-in-depth: use trusted param, not chatflow.workspaceId (merge mutates in-place)
+    await _checkAndUpdateDocumentStoreUsage(newDbChatflow, workspaceId)
+    const dbResponse = await appServer.AppDataSource.getRepository(ChatFlow).save(newDbChatflow)
+
+    // Check if the flow is agentflow and if it has a schedule node, if yes then notify the beat to sync the schedule
+    if (dbResponse.type === EnumChatflowType.AGENTFLOW) {
+        const flowData = dbResponse.flowData
+        const parsedFlowData: IReactFlowObject = JSON.parse(flowData)
+        const nodes = (parsedFlowData.nodes || []).filter((node) => node.data.name !== 'stickyNoteAgentflow')
+        const startNode = nodes.find((node) => node.data.name === 'startAgentflow')
+        const startInputType = startNode?.data?.inputs?.startInputType as StartInputType | undefined
+        if (startInputType === 'scheduleInput') {
+            const scheduleInputMode = startNode?.data?.inputs?.scheduleInputMode as ScheduleInputMode | undefined
+            if (!scheduleInputMode) {
+                throw new InternalFlowiseError(
+                    StatusCodes.BAD_REQUEST,
+                    'Schedule Input Mode is required on the Start node when Start Input Type is Schedule.'
+                )
+            }
+            const resolvedCron = scheduleService.resolveScheduleCron(startNode?.data?.inputs || {})
+            const scheduleTimezone = startNode?.data?.inputs?.scheduleTimezone || 'UTC'
+            const scheduleDefaultInput = startNode?.data?.inputs?.scheduleDefaultInput || ''
+            const scheduleFormDefaultsRaw = startNode?.data?.inputs?.scheduleFormDefaults
+            const scheduleFormDefaults =
+                scheduleInputMode === 'form'
+                    ? typeof scheduleFormDefaultsRaw === 'string'
+                        ? scheduleFormDefaultsRaw
+                        : JSON.stringify(scheduleFormDefaultsRaw ?? {})
+                    : undefined
+            const scheduleEndDate = startNode?.data?.inputs?.scheduleEndDate ? new Date(startNode.data.inputs.scheduleEndDate) : undefined
+            const canEnable = scheduleService.canScheduleEnable(startNode?.data?.inputs ?? {})
+            const record = await scheduleService.createOrUpdateSchedule({
+                triggerType: ScheduleTriggerType.AGENTFLOW,
+                targetId: dbResponse.id,
+                nodeId: startNode?.id,
+                cronExpression: resolvedCron.cronExpression || '',
+                timezone: scheduleTimezone,
+                enabled: canEnable === false ? false : undefined, // automatically disable schedule if it cannot be enabled; otherwise preserve the existing enabled value
+                scheduleInputMode,
+                defaultInput: scheduleInputMode === 'text' ? scheduleDefaultInput : '',
+                defaultForm: scheduleFormDefaults,
+                workspaceId,
+                endDate: scheduleEndDate
+            })
+            if (record.enabled) {
+                // Notify the beat to sync the (enabled) schedule
+                await ScheduleBeat.getInstance().onScheduleChanged(record.id, 'upsert')
+            } else {
+                // Schedule is disabled; ensure any existing scheduled job is removed
+                await ScheduleBeat.getInstance().onScheduleChanged(record.id, 'delete')
+            }
+        } else {
+            // If the start node is not scheduleInput, then we need to delete the existing schedule if it exists
+            const existingRecord = await scheduleService.deleteScheduleForTarget(dbResponse.id, ScheduleTriggerType.AGENTFLOW, workspaceId)
+            if (existingRecord) {
+                await ScheduleBeat.getInstance().onScheduleChanged(existingRecord.id, 'delete')
+            }
+        }
+    }
+
+    return dbResponse
 }
 
 // Get specific chatflow chatbotConfig via id (PUBLIC endpoint, used to retrieve config for embedded chat)
-// Safe as public endpoint as chatbotConfig doesn't contain sensitive credential
+// flowData is sanitized before returning — password, file, folder inputs and credential references are stripped
 const getSinglePublicChatbotConfig = async (chatflowId: string): Promise<any> => {
     try {
         const appServer = getRunningExpressApp()
@@ -336,7 +570,25 @@ const getSinglePublicChatbotConfig = async (chatflowId: string): Promise<any> =>
         if (dbResponse.chatbotConfig || uploadsConfig) {
             try {
                 const parsedConfig = dbResponse.chatbotConfig ? JSON.parse(dbResponse.chatbotConfig) : {}
-                return { ...parsedConfig, uploads: uploadsConfig }
+                const ttsConfig =
+                    typeof dbResponse.textToSpeech === 'string' ? JSON.parse(dbResponse.textToSpeech) : dbResponse.textToSpeech
+
+                let isTTSEnabled = false
+                if (ttsConfig) {
+                    Object.keys(ttsConfig).forEach((provider) => {
+                        if (provider !== 'none' && ttsConfig?.[provider]?.status) {
+                            isTTSEnabled = true
+                        }
+                    })
+                }
+                delete parsedConfig.allowedOrigins
+                delete parsedConfig.allowedOriginsError
+                return {
+                    ...parsedConfig,
+                    uploads: uploadsConfig,
+                    flowData: sanitizeFlowDataForPublicEndpoint(dbResponse.flowData),
+                    isTTSEnabled
+                }
             } catch (e) {
                 throw new InternalFlowiseError(StatusCodes.INTERNAL_SERVER_ERROR, `Error parsing Chatbot Config for Chatflow ${chatflowId}`)
             }
@@ -350,28 +602,112 @@ const getSinglePublicChatbotConfig = async (chatflowId: string): Promise<any> =>
     }
 }
 
-const _checkAndUpdateDocumentStoreUsage = async (chatflow: ChatFlow) => {
+const _checkAndUpdateDocumentStoreUsage = async (chatflow: ChatFlow, workspaceId?: string) => {
     const parsedFlowData: IReactFlowObject = JSON.parse(chatflow.flowData)
     const nodes = parsedFlowData.nodes
     // from the nodes array find if there is a node with name == documentStore)
     const node = nodes.length > 0 && nodes.find((node) => node.data.name === 'documentStore')
     if (!node || !node.data || !node.data.inputs || node.data.inputs['selectedStore'] === undefined) {
-        await documentStoreService.updateDocumentStoreUsage(chatflow.id, undefined)
+        await documentStoreService.updateDocumentStoreUsage(chatflow.id, undefined, workspaceId)
     } else {
-        await documentStoreService.updateDocumentStoreUsage(chatflow.id, node.data.inputs['selectedStore'])
+        await documentStoreService.updateDocumentStoreUsage(chatflow.id, node.data.inputs['selectedStore'], workspaceId)
+    }
+}
+
+const checkIfChatflowHasChanged = async (chatflowId: string, lastUpdatedDateTime: string, workspaceId: string): Promise<any> => {
+    try {
+        const chatflow = await getChatflowByIdForWorkspace(chatflowId, workspaceId)
+        if (!chatflow) {
+            throw new InternalFlowiseError(StatusCodes.NOT_FOUND, `Chatflow ${chatflowId} not found`)
+        }
+        return { hasChanged: chatflow.updatedDate.toISOString() !== lastUpdatedDateTime }
+    } catch (error) {
+        if (error instanceof InternalFlowiseError) {
+            throw error
+        }
+        throw new InternalFlowiseError(
+            StatusCodes.INTERNAL_SERVER_ERROR,
+            `Error: chatflowsService.checkIfChatflowHasChanged - ${getErrorMessage(error)}`
+        )
+    }
+}
+
+const setWebhookSecret = async (chatflowId: string, workspaceId: string): Promise<{ webhookSecret: string }> => {
+    try {
+        const appServer = getRunningExpressApp()
+        const repo = appServer.AppDataSource.getRepository(ChatFlow)
+        const chatflow = await repo.findOne({ where: { id: chatflowId, workspaceId } })
+        if (!chatflow) throw new InternalFlowiseError(StatusCodes.NOT_FOUND, `Chatflow ${chatflowId} not found`)
+        const plaintext = randomBytes(32).toString('hex')
+        chatflow.webhookSecret = await encryptCredentialData({ secret: plaintext })
+        chatflow.webhookSecretConfigured = true
+        await repo.save(chatflow)
+        return { webhookSecret: plaintext }
+    } catch (error) {
+        if (error instanceof InternalFlowiseError) throw error
+        throw new InternalFlowiseError(
+            StatusCodes.INTERNAL_SERVER_ERROR,
+            `Error: chatflowsService.setWebhookSecret - ${getErrorMessage(error)}`
+        )
+    }
+}
+
+const clearWebhookSecret = async (chatflowId: string, workspaceId: string): Promise<void> => {
+    try {
+        const appServer = getRunningExpressApp()
+        const repo = appServer.AppDataSource.getRepository(ChatFlow)
+        const chatflow = await repo.findOne({ where: { id: chatflowId, workspaceId } })
+        if (!chatflow) throw new InternalFlowiseError(StatusCodes.NOT_FOUND, `Chatflow ${chatflowId} not found`)
+        chatflow.webhookSecret = null
+        chatflow.webhookSecretConfigured = false
+        await repo.save(chatflow)
+    } catch (error) {
+        if (error instanceof InternalFlowiseError) throw error
+        throw new InternalFlowiseError(
+            StatusCodes.INTERNAL_SERVER_ERROR,
+            `Error: chatflowsService.clearWebhookSecret - ${getErrorMessage(error)}`
+        )
+    }
+}
+
+const getWebhookSecret = async (chatflowId: string, workspaceId: string): Promise<string | null> => {
+    try {
+        const appServer = getRunningExpressApp()
+        const dbResponse = await appServer.AppDataSource.getRepository(ChatFlow)
+            .createQueryBuilder('chatflow')
+            .select('chatflow.webhookSecret')
+            .where('chatflow.id = :id', { id: chatflowId })
+            .andWhere('chatflow.workspaceId = :workspaceId', { workspaceId })
+            .getOne()
+        const stored = dbResponse?.webhookSecret
+        if (!stored) return null
+        const decrypted = await decryptCredentialData(stored)
+        return (decrypted?.secret as string | undefined) ?? null
+    } catch (error) {
+        if (error instanceof InternalFlowiseError) throw error
+        throw new InternalFlowiseError(
+            StatusCodes.INTERNAL_SERVER_ERROR,
+            `Error: chatflowsService.getWebhookSecret - ${getErrorMessage(error)}`
+        )
     }
 }
 
 export default {
+    assertChatflowIdsInWorkspace,
     checkIfChatflowIsValidForStreaming,
     checkIfChatflowIsValidForUploads,
     deleteChatflow,
     getAllChatflows,
+    getAllChatflowsCount,
     getChatflowByApiKey,
     getChatflowById,
+    getChatflowByIdForWorkspace,
     saveChatflow,
-    importChatflows,
     updateChatflow,
-    getSinglePublicChatflow,
-    getSinglePublicChatbotConfig
+    getSinglePublicChatbotConfig,
+    checkIfChatflowHasChanged,
+    getAllChatflowsCountByOrganization,
+    setWebhookSecret,
+    clearWebhookSecret,
+    getWebhookSecret
 }

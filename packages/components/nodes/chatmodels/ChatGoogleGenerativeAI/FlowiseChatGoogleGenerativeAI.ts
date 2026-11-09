@@ -1,395 +1,81 @@
-import { BaseMessage, AIMessage, AIMessageChunk, isBaseMessage, ChatMessage, MessageContentComplex } from '@langchain/core/messages'
+import { IMultiModalOption, IVisionChatModal } from '../../../src/Interface'
+import { ChatGoogleGenerativeAI as LangchainChatGoogleGenerativeAI, GoogleGenerativeAIChatInput } from '@langchain/google-genai'
 import { CallbackManagerForLLMRun } from '@langchain/core/callbacks/manager'
-import { BaseChatModel, type BaseChatModelParams } from '@langchain/core/language_models/chat_models'
-import { ChatGeneration, ChatGenerationChunk, ChatResult } from '@langchain/core/outputs'
-import { ToolCallChunk } from '@langchain/core/messages/tool'
-import { NewTokenIndices } from '@langchain/core/callbacks/base'
+import { ChatResult, ChatGenerationChunk } from '@langchain/core/outputs'
 import {
     EnhancedGenerateContentResponse,
     Content,
     Part,
-    Tool,
-    GenerativeModel,
-    GoogleGenerativeAI as GenerativeAI
-} from '@google/generative-ai'
-import type {
+    POSSIBLE_ROLES,
     FunctionCallPart,
-    FunctionResponsePart,
-    SafetySetting,
-    UsageMetadata,
-    FunctionDeclarationsTool as GoogleGenerativeAIFunctionDeclarationsTool,
-    GenerateContentRequest
+    TextPart,
+    FileDataPart,
+    InlineDataPart,
+    GenerateContentResponse
 } from '@google/generative-ai'
-import { ICommonObject, IMultiModalOption, IVisionChatModal } from '../../../src'
-import { StructuredToolInterface } from '@langchain/core/tools'
-import { isStructuredTool } from '@langchain/core/utils/function_calling'
-import { zodToJsonSchema } from 'zod-to-json-schema'
-import { BaseLanguageModelCallOptions } from '@langchain/core/language_models/base'
-import type FlowiseGoogleAICacheManager from '../../cache/GoogleGenerativeAIContextCache/FlowiseGoogleAICacheManager'
+import {
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    ChatMessage,
+    MessageContent,
+    MessageContentComplex,
+    UsageMetadata,
+    StandardContentBlockConverter,
+    parseBase64DataUrl,
+    convertToProviderContentBlock,
+    isDataContentBlock,
+    ToolMessage
+} from '@langchain/core/messages'
+import { ChatGeneration } from '@langchain/core/outputs'
+import { ToolCallChunk } from '@langchain/core/messages/tool'
+import { v4 as uuidv4 } from 'uuid'
 
-const DEFAULT_IMAGE_MAX_TOKEN = 8192
-const DEFAULT_IMAGE_MODEL = 'gemini-1.5-flash-latest'
+// ============================================================================
+// Constants
+// ============================================================================
 
-interface TokenUsage {
-    completionTokens?: number
-    promptTokens?: number
-    totalTokens?: number
+export const _FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY = '__gemini_function_call_thought_signatures__'
+const DUMMY_SIGNATURE =
+    'ErYCCrMCAdHtim9kOoOkrPiCNVsmlpMIKd7ZMxgiFbVQOkgp7nlLcDMzVsZwIzvuT7nQROivoXA72ccC2lSDvR0Gh7dkWaGuj7ctv6t7ZceHnecx0QYa+ix8tYpRfjhyWozQ49lWiws6+YGjCt10KRTyWsZ2h6O7iHTYJwKIRwGUHRKy/qK/6kFxJm5ML00gLq4D8s5Z6DBpp2ZlR+uF4G8jJgeWQgyHWVdx2wGYElaceVAc66tZdPQRdOHpWtgYSI1YdaXgVI8KHY3/EfNc2YqqMIulvkDBAnuMhkAjV9xmBa54Tq+ih3Im4+r3DzqhGqYdsSkhS0kZMwte4Hjs65dZzCw9lANxIqYi1DJ639WNPYihp/DCJCos7o+/EeSPJaio5sgWDyUnMGkY1atsJZ+m7pj7DD5tvQ=='
+
+// Extended Part type with thinking support
+type GoogleGenerativeAIPart = Part & {
+    thought?: boolean
+    thoughtSignature?: string
 }
 
-interface GoogleGenerativeAIChatCallOptions extends BaseLanguageModelCallOptions {
-    tools?: StructuredToolInterface[] | GoogleGenerativeAIFunctionDeclarationsTool[]
-    /**
-     * Whether or not to include usage data, like token counts
-     * in the streamed response chunks.
-     * @default true
-     */
-    streamUsage?: boolean
+// ============================================================================
+// Utility Functions for Message Conversion
+// ============================================================================
+
+export function getMessageAuthor(message: BaseMessage) {
+    if (ChatMessage.isInstance(message)) {
+        return message.role
+    }
+    return message.type
 }
 
-export interface GoogleGenerativeAIChatInput extends BaseChatModelParams, Pick<GoogleGenerativeAIChatCallOptions, 'streamUsage'> {
-    modelName?: string
-    model?: string
-    temperature?: number
-    maxOutputTokens?: number
-    topP?: number
-    topK?: number
-    stopSequences?: string[]
-    safetySettings?: SafetySetting[]
-    apiKey?: string
-    apiVersion?: string
-    baseUrl?: string
-    streaming?: boolean
-}
-
-class LangchainChatGoogleGenerativeAI
-    extends BaseChatModel<GoogleGenerativeAIChatCallOptions, AIMessageChunk>
-    implements GoogleGenerativeAIChatInput
-{
-    modelName = 'gemini-pro'
-
-    temperature?: number
-
-    maxOutputTokens?: number
-
-    topP?: number
-
-    topK?: number
-
-    stopSequences: string[] = []
-
-    safetySettings?: SafetySetting[]
-
-    apiKey?: string
-
-    streaming = false
-
-    streamUsage = true
-
-    private client: GenerativeModel
-
-    private contextCache?: FlowiseGoogleAICacheManager
-
-    get _isMultimodalModel() {
-        return this.modelName.includes('vision') || this.modelName.startsWith('gemini-1.5')
-    }
-
-    constructor(fields?: GoogleGenerativeAIChatInput) {
-        super(fields ?? {})
-
-        this.modelName = fields?.model?.replace(/^models\//, '') ?? fields?.modelName?.replace(/^models\//, '') ?? 'gemini-pro'
-
-        this.maxOutputTokens = fields?.maxOutputTokens ?? this.maxOutputTokens
-
-        if (this.maxOutputTokens && this.maxOutputTokens < 0) {
-            throw new Error('`maxOutputTokens` must be a positive integer')
-        }
-
-        this.temperature = fields?.temperature ?? this.temperature
-        if (this.temperature && (this.temperature < 0 || this.temperature > 1)) {
-            throw new Error('`temperature` must be in the range of [0.0,1.0]')
-        }
-
-        this.topP = fields?.topP ?? this.topP
-        if (this.topP && this.topP < 0) {
-            throw new Error('`topP` must be a positive integer')
-        }
-
-        if (this.topP && this.topP > 1) {
-            throw new Error('`topP` must be below 1.')
-        }
-
-        this.topK = fields?.topK ?? this.topK
-        if (this.topK && this.topK < 0) {
-            throw new Error('`topK` must be a positive integer')
-        }
-
-        this.stopSequences = fields?.stopSequences ?? this.stopSequences
-
-        this.apiKey = fields?.apiKey ?? process.env['GOOGLE_API_KEY']
-        if (!this.apiKey) {
-            throw new Error(
-                'Please set an API key for Google GenerativeAI ' +
-                    'in the environment variable GOOGLE_API_KEY ' +
-                    'or in the `apiKey` field of the ' +
-                    'ChatGoogleGenerativeAI constructor'
-            )
-        }
-
-        this.safetySettings = fields?.safetySettings ?? this.safetySettings
-        if (this.safetySettings && this.safetySettings.length > 0) {
-            const safetySettingsSet = new Set(this.safetySettings.map((s) => s.category))
-            if (safetySettingsSet.size !== this.safetySettings.length) {
-                throw new Error('The categories in `safetySettings` array must be unique')
-            }
-        }
-
-        this.streaming = fields?.streaming ?? this.streaming
-
-        this.streamUsage = fields?.streamUsage ?? this.streamUsage
-
-        this.getClient()
-    }
-
-    async getClient(prompt?: Content[], tools?: Tool[]) {
-        this.client = new GenerativeAI(this.apiKey ?? '').getGenerativeModel({
-            model: this.modelName,
-            tools,
-            safetySettings: this.safetySettings as SafetySetting[],
-            generationConfig: {
-                candidateCount: 1,
-                stopSequences: this.stopSequences,
-                maxOutputTokens: this.maxOutputTokens,
-                temperature: this.temperature,
-                topP: this.topP,
-                topK: this.topK
-            }
-        })
-        if (this.contextCache) {
-            const cachedContent = await this.contextCache.lookup({
-                contents: prompt ? [{ ...prompt[0], parts: prompt[0].parts.slice(0, 1) }] : [],
-                model: this.modelName,
-                tools
-            })
-            this.client.cachedContent = cachedContent as any
-        }
-    }
-
-    _combineLLMOutput() {
-        return []
-    }
-
-    _llmType() {
-        return 'googlegenerativeai'
-    }
-
-    override bindTools(tools: (StructuredToolInterface | Record<string, unknown>)[], kwargs?: Partial<ICommonObject>) {
-        //@ts-ignore
-        return this.bind({ tools: convertToGeminiTools(tools), ...kwargs })
-    }
-
-    invocationParams(options?: this['ParsedCallOptions']): Omit<GenerateContentRequest, 'contents'> {
-        const tools = options?.tools as GoogleGenerativeAIFunctionDeclarationsTool[] | StructuredToolInterface[] | undefined
-        if (Array.isArray(tools) && !tools.some((t: any) => !('lc_namespace' in t))) {
-            return {
-                tools: convertToGeminiTools(options?.tools as StructuredToolInterface[]) as any
-            }
-        }
-        return {
-            tools: options?.tools as GoogleGenerativeAIFunctionDeclarationsTool[] | undefined
-        }
-    }
-
-    convertFunctionResponse(prompts: Content[]) {
-        for (let i = 0; i < prompts.length; i += 1) {
-            if (prompts[i].role === 'function') {
-                if (prompts[i - 1].role === 'model') {
-                    const toolName = prompts[i - 1].parts[0].functionCall?.name ?? ''
-                    prompts[i].parts = [
-                        {
-                            functionResponse: {
-                                name: toolName,
-                                response: {
-                                    name: toolName,
-                                    content: prompts[i].parts[0].text
-                                }
-                            }
-                        }
-                    ]
-                }
-            }
-        }
-    }
-
-    setContextCache(contextCache: FlowiseGoogleAICacheManager): void {
-        this.contextCache = contextCache
-    }
-
-    async getNumTokens(prompt: BaseMessage[]) {
-        const contents = convertBaseMessagesToContent(prompt, this._isMultimodalModel)
-        const { totalTokens } = await this.client.countTokens({ contents })
-        return totalTokens
-    }
-
-    async _generateNonStreaming(
-        prompt: Content[],
-        options: this['ParsedCallOptions'],
-        _runManager?: CallbackManagerForLLMRun
-    ): Promise<ChatResult> {
-        //@ts-ignore
-        const tools = options.tools ?? []
-
-        this.convertFunctionResponse(prompt)
-
-        if (tools.length > 0) {
-            await this.getClient(prompt, tools as Tool[])
-        } else {
-            await this.getClient(prompt)
-        }
-        const res = await this.caller.callWithOptions({ signal: options?.signal }, async () => {
-            let output
-            try {
-                output = await this.client.generateContent({
-                    contents: prompt
-                })
-            } catch (e: any) {
-                if (e.message?.includes('400 Bad Request')) {
-                    e.status = 400
-                }
-                throw e
-            }
-            return output
-        })
-        const generationResult = mapGenerateContentResultToChatResult(res.response)
-        await _runManager?.handleLLMNewToken(generationResult.generations?.length ? generationResult.generations[0].text : '')
-        return generationResult
-    }
-
-    async _generate(
-        messages: BaseMessage[],
-        options: this['ParsedCallOptions'],
-        runManager?: CallbackManagerForLLMRun
-    ): Promise<ChatResult> {
-        let prompt = convertBaseMessagesToContent(messages, this._isMultimodalModel)
-        prompt = checkIfEmptyContentAndSameRole(prompt)
-
-        // Handle streaming
-        if (this.streaming) {
-            const tokenUsage: TokenUsage = {}
-            const stream = this._streamResponseChunks(messages, options, runManager)
-            const finalChunks: Record<number, ChatGenerationChunk> = {}
-
-            for await (const chunk of stream) {
-                const index = (chunk.generationInfo as NewTokenIndices)?.completion ?? 0
-                if (finalChunks[index] === undefined) {
-                    finalChunks[index] = chunk
-                } else {
-                    finalChunks[index] = finalChunks[index].concat(chunk)
-                }
-            }
-            const generations = Object.entries(finalChunks)
-                .sort(([aKey], [bKey]) => parseInt(aKey, 10) - parseInt(bKey, 10))
-                .map(([_, value]) => value)
-
-            return { generations, llmOutput: { estimatedTokenUsage: tokenUsage } }
-        }
-        return this._generateNonStreaming(prompt, options, runManager)
-    }
-
-    async *_streamResponseChunks(
-        messages: BaseMessage[],
-        options: this['ParsedCallOptions'],
-        runManager?: CallbackManagerForLLMRun
-    ): AsyncGenerator<ChatGenerationChunk> {
-        let prompt = convertBaseMessagesToContent(messages, this._isMultimodalModel)
-        prompt = checkIfEmptyContentAndSameRole(prompt)
-
-        const parameters = this.invocationParams(options)
-        const request = {
-            ...parameters,
-            contents: prompt
-        }
-
-        const tools = options.tools ?? []
-        if (tools.length > 0) {
-            await this.getClient(prompt, tools as Tool[])
-        } else {
-            await this.getClient(prompt)
-        }
-
-        const stream = await this.caller.callWithOptions({ signal: options?.signal }, async () => {
-            const { stream } = await this.client.generateContentStream(request)
-            return stream
-        })
-
-        let usageMetadata: UsageMetadata | ICommonObject | undefined
-        let index = 0
-        for await (const response of stream) {
-            if ('usageMetadata' in response && this.streamUsage !== false && options.streamUsage !== false) {
-                const genAIUsageMetadata = response.usageMetadata as {
-                    promptTokenCount: number
-                    candidatesTokenCount: number
-                    totalTokenCount: number
-                }
-                if (!usageMetadata) {
-                    usageMetadata = {
-                        input_tokens: genAIUsageMetadata.promptTokenCount,
-                        output_tokens: genAIUsageMetadata.candidatesTokenCount,
-                        total_tokens: genAIUsageMetadata.totalTokenCount
-                    }
-                } else {
-                    // Under the hood, LangChain combines the prompt tokens. Google returns the updated
-                    // total each time, so we need to find the difference between the tokens.
-                    const outputTokenDiff = genAIUsageMetadata.candidatesTokenCount - (usageMetadata as ICommonObject).output_tokens
-                    usageMetadata = {
-                        input_tokens: 0,
-                        output_tokens: outputTokenDiff,
-                        total_tokens: outputTokenDiff
-                    }
-                }
-            }
-
-            const chunk = convertResponseContentToChatGenerationChunk(response, {
-                usageMetadata: usageMetadata as UsageMetadata,
-                index
-            })
-            index += 1
-            if (!chunk) {
-                continue
-            }
-
-            yield chunk
-            await runManager?.handleLLMNewToken(chunk.text ?? '')
-        }
-    }
-}
-
-export class ChatGoogleGenerativeAI extends LangchainChatGoogleGenerativeAI implements IVisionChatModal {
-    configuredModel: string
-    configuredMaxToken?: number
-    multiModalOption: IMultiModalOption
-    id: string
-
-    constructor(id: string, fields?: GoogleGenerativeAIChatInput) {
-        super(fields)
-        this.id = id
-        this.configuredModel = fields?.modelName ?? ''
-        this.configuredMaxToken = fields?.maxOutputTokens
-    }
-
-    revertToOriginalModel(): void {
-        this.modelName = this.configuredModel
-        this.maxOutputTokens = this.configuredMaxToken
-    }
-
-    setMultiModalOption(multiModalOption: IMultiModalOption): void {
-        this.multiModalOption = multiModalOption
-    }
-
-    setVisionModel(): void {
-        if (this.modelName === 'gemini-1.0-pro-latest') {
-            this.modelName = DEFAULT_IMAGE_MODEL
-            this.maxOutputTokens = this.configuredMaxToken ? this.configuredMaxToken : DEFAULT_IMAGE_MAX_TOKEN
-        }
+/**
+ * Maps a message type to a Google Generative AI chat author.
+ * Returns 'user' as default instead of throwing error
+ * https://github.com/FlowiseAI/Flowise/issues/4743
+ */
+export function convertAuthorToRole(author: string): (typeof POSSIBLE_ROLES)[number] {
+    switch (author) {
+        case 'supervisor':
+        case 'ai':
+        case 'model':
+            return 'model'
+        case 'system':
+            return 'system'
+        case 'human':
+            return 'user'
+        case 'tool':
+        case 'function':
+            return 'function'
+        default:
+            return 'user'
     }
 }
 
@@ -397,155 +83,333 @@ function messageContentMedia(content: MessageContentComplex): Part {
     if ('mimeType' in content && 'data' in content) {
         return {
             inlineData: {
-                mimeType: content.mimeType,
-                data: content.data
+                mimeType: content.mimeType as string,
+                data: content.data as string
             }
         }
     }
-
+    if ('mimeType' in content && 'fileUri' in content) {
+        return {
+            fileData: {
+                mimeType: content.mimeType as string,
+                fileUri: content.fileUri as string
+            }
+        }
+    }
     throw new Error('Invalid media content')
 }
 
-function getMessageAuthor(message: BaseMessage) {
-    const type = message._getType()
-    if (ChatMessage.isInstance(message)) {
-        return message.role
-    }
-    return message.name ?? type
-}
-
-function convertAuthorToRole(author: string) {
-    switch (author.toLowerCase()) {
-        case 'ai':
-        case 'assistant':
-        case 'model':
-            return 'model'
-        case 'function':
-        case 'tool':
-            return 'function'
-        case 'system':
-        case 'human':
-        default:
-            return 'user'
-    }
-}
-
-function convertMessageContentToParts(message: BaseMessage, isMultimodalModel: boolean): Part[] {
-    if (typeof message.content === 'string' && message.content !== '') {
-        return [{ text: message.content }]
-    }
-
-    let functionCalls: FunctionCallPart[] = []
-    let functionResponses: FunctionResponsePart[] = []
-    let messageParts: Part[] = []
-
-    if ('tool_calls' in message && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-        functionCalls = message.tool_calls.map((tc) => ({
-            functionCall: {
-                name: tc.name,
-                args: tc.args
+function inferToolNameFromPreviousMessages(message: any, previousMessages: BaseMessage[]): string | undefined {
+    return previousMessages
+        .map((msg) => {
+            if (AIMessage.isInstance(msg)) {
+                return msg.tool_calls ?? []
             }
-        }))
-    } else if (message._getType() === 'tool' && message.name && message.content) {
-        functionResponses = [
+            return []
+        })
+        .flat()
+        .find((toolCall) => {
+            return toolCall.id === message.tool_call_id
+        })?.name
+}
+
+function _getStandardContentBlockConverter(isMultimodalModel: boolean) {
+    const standardContentBlockConverter: StandardContentBlockConverter<{
+        text: TextPart
+        image: FileDataPart | InlineDataPart
+        audio: FileDataPart | InlineDataPart
+        file: FileDataPart | InlineDataPart | TextPart
+    }> = {
+        providerName: 'Google Gemini',
+
+        fromStandardTextBlock(block) {
+            return {
+                text: block.text
+            }
+        },
+
+        fromStandardImageBlock(block): FileDataPart | InlineDataPart {
+            if (!isMultimodalModel) {
+                throw new Error('This model does not support images')
+            }
+            if (block.source_type === 'url') {
+                const data = parseBase64DataUrl({ dataUrl: block.url })
+                if (data) {
+                    return {
+                        inlineData: {
+                            mimeType: data.mime_type,
+                            data: data.data
+                        }
+                    }
+                } else {
+                    return {
+                        fileData: {
+                            mimeType: block.mime_type ?? '',
+                            fileUri: block.url
+                        }
+                    }
+                }
+            }
+            if (block.source_type === 'base64') {
+                return {
+                    inlineData: {
+                        mimeType: block.mime_type ?? '',
+                        data: block.data
+                    }
+                }
+            }
+            throw new Error(`Unsupported source type: ${block.source_type}`)
+        },
+
+        fromStandardAudioBlock(block): FileDataPart | InlineDataPart {
+            if (!isMultimodalModel) {
+                throw new Error('This model does not support audio')
+            }
+            if (block.source_type === 'url') {
+                const data = parseBase64DataUrl({ dataUrl: block.url })
+                if (data) {
+                    return {
+                        inlineData: {
+                            mimeType: data.mime_type,
+                            data: data.data
+                        }
+                    }
+                } else {
+                    return {
+                        fileData: {
+                            mimeType: block.mime_type ?? '',
+                            fileUri: block.url
+                        }
+                    }
+                }
+            }
+            if (block.source_type === 'base64') {
+                return {
+                    inlineData: {
+                        mimeType: block.mime_type ?? '',
+                        data: block.data
+                    }
+                }
+            }
+            throw new Error(`Unsupported source type: ${block.source_type}`)
+        },
+
+        fromStandardFileBlock(block): FileDataPart | InlineDataPart | TextPart {
+            if (!isMultimodalModel) {
+                throw new Error('This model does not support files')
+            }
+            if (block.source_type === 'text') {
+                return {
+                    text: block.text
+                }
+            }
+            if (block.source_type === 'url') {
+                const data = parseBase64DataUrl({ dataUrl: block.url })
+                if (data) {
+                    return {
+                        inlineData: {
+                            mimeType: data.mime_type,
+                            data: data.data
+                        }
+                    }
+                } else {
+                    return {
+                        fileData: {
+                            mimeType: block.mime_type ?? '',
+                            fileUri: block.url
+                        }
+                    }
+                }
+            }
+            if (block.source_type === 'base64') {
+                return {
+                    inlineData: {
+                        mimeType: block.mime_type ?? '',
+                        data: block.data
+                    }
+                }
+            }
+            throw new Error(`Unsupported source type: ${block.source_type}`)
+        }
+    }
+    return standardContentBlockConverter
+}
+
+function _convertLangChainContentToPart(content: MessageContentComplex, isMultimodalModel: boolean): Part | undefined {
+    if (isDataContentBlock(content)) {
+        return convertToProviderContentBlock(content, _getStandardContentBlockConverter(isMultimodalModel))
+    }
+
+    if (content.type === 'text') {
+        return { text: content.text }
+    } else if (content.type === 'executableCode') {
+        return { executableCode: (content as any).executableCode }
+    } else if (content.type === 'codeExecutionResult') {
+        return { codeExecutionResult: (content as any).codeExecutionResult }
+    } else if (content.type === 'image_url') {
+        if (!isMultimodalModel) {
+            throw new Error(`This model does not support images`)
+        }
+        let source
+        if (typeof content.image_url === 'string') {
+            source = content.image_url
+        } else if (typeof content.image_url === 'object' && 'url' in content.image_url) {
+            source = content.image_url.url
+        } else {
+            throw new Error('Please provide image as base64 encoded data URL')
+        }
+        const [dm, data] = source.split(',')
+        if (!dm.startsWith('data:')) {
+            throw new Error('Please provide image as base64 encoded data URL')
+        }
+        const [mimeType, encoding] = dm.replace(/^data:/, '').split(';')
+        if (encoding !== 'base64') {
+            throw new Error('Please provide image as base64 encoded data URL')
+        }
+        return {
+            inlineData: {
+                data,
+                mimeType
+            }
+        }
+    } else if (content.type === 'media') {
+        return messageContentMedia(content)
+    } else if (content.type === 'tool_use') {
+        return {
+            functionCall: {
+                name: (content as any).name,
+                args: (content as any).input
+            }
+        }
+    } else if (content.type === 'tool_call') {
+        return {
+            functionCall: {
+                name: (content as any).name,
+                args: (content as any).args
+            }
+        }
+    } else if (
+        content.type?.includes('/') &&
+        content.type.split('/').length === 2 &&
+        'data' in content &&
+        typeof content.data === 'string'
+    ) {
+        return {
+            inlineData: {
+                mimeType: content.type,
+                data: content.data
+            }
+        }
+    } else if ('functionCall' in content) {
+        return undefined
+    } else {
+        if ('type' in content) {
+            throw new Error(`Unknown content type ${content.type}`)
+        } else {
+            throw new Error(`Unknown content ${JSON.stringify(content)}`)
+        }
+    }
+}
+
+export function convertMessageContentToParts(
+    message: BaseMessage,
+    isMultimodalModel: boolean,
+    previousMessages: BaseMessage[],
+    model?: string
+): Part[] {
+    if (ToolMessage.isInstance(message)) {
+        const messageName = message.name ?? inferToolNameFromPreviousMessages(message, previousMessages)
+        if (messageName === undefined) {
+            throw new Error(
+                `Google requires a tool name for each tool call response, and we could not infer a called tool name for ToolMessage "${message.id}" from your passed messages. Please populate a "name" field on that ToolMessage explicitly.`
+            )
+        }
+
+        const result = Array.isArray(message.content)
+            ? (message.content
+                  .map((c) => _convertLangChainContentToPart(c as MessageContentComplex, isMultimodalModel))
+                  .filter((p) => p !== undefined) as Part[])
+            : message.content
+
+        if (message.status === 'error') {
+            return [
+                {
+                    functionResponse: {
+                        name: messageName,
+                        response: { error: { details: result } }
+                    }
+                }
+            ]
+        }
+
+        return [
             {
                 functionResponse: {
-                    name: message.name,
-                    response: message.content
+                    name: messageName,
+                    response: { result }
                 }
             }
         ]
-    } else if (Array.isArray(message.content)) {
-        messageParts = message.content.map((c) => {
-            if (c.type === 'text') {
-                return {
-                    text: c.text
-                }
-            }
+    }
 
-            if (c.type === 'image_url') {
-                if (!isMultimodalModel) {
-                    throw new Error(`This model does not support images`)
-                }
-                let source
-                if (typeof c.image_url === 'string') {
-                    source = c.image_url
-                } else if (typeof c.image_url === 'object' && 'url' in c.image_url) {
-                    source = c.image_url.url
-                } else {
-                    throw new Error('Please provide image as base64 encoded data URL')
-                }
-                const [dm, data] = source.split(',')
-                if (!dm.startsWith('data:')) {
-                    throw new Error('Please provide image as base64 encoded data URL')
-                }
+    let functionCalls: FunctionCallPart[] = []
+    const messageParts: Part[] = []
 
-                const [mimeType, encoding] = dm.replace(/^data:/, '').split(';')
-                if (encoding !== 'base64') {
-                    throw new Error('Please provide image as base64 encoded data URL')
-                }
+    if (typeof message.content === 'string' && message.content) {
+        messageParts.push({ text: message.content })
+    }
 
-                return {
-                    inlineData: {
-                        data,
-                        mimeType
+    if (Array.isArray(message.content)) {
+        messageParts.push(
+            ...(message.content
+                .map((c) => _convertLangChainContentToPart(c as MessageContentComplex, isMultimodalModel))
+                .filter((p) => p !== undefined) as Part[])
+        )
+    }
+
+    const functionThoughtSignatures = message.additional_kwargs?.[_FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY] as
+        | Record<string, string>
+        | undefined
+
+    if (AIMessage.isInstance(message) && message.tool_calls?.length) {
+        functionCalls = message.tool_calls.map((tc) => {
+            const thoughtSignature = (() => {
+                if (tc.id) {
+                    const signature = functionThoughtSignatures?.[tc.id]
+                    if (signature) {
+                        return signature
                     }
                 }
-            } else if (c.type === 'media') {
-                return messageContentMedia(c)
-            } else if (c.type === 'tool_use') {
-                return {
-                    functionCall: {
-                        name: c.name,
-                        args: c.input
-                    }
+                if (model?.includes('gemini-3')) {
+                    return DUMMY_SIGNATURE
                 }
-            }
-            throw new Error(`Unknown content type ${(c as { type: string }).type}`)
+                return ''
+            })()
+            return {
+                functionCall: {
+                    name: tc.name,
+                    args: tc.args
+                },
+                ...(thoughtSignature ? { thoughtSignature } : {})
+            } as FunctionCallPart
         })
     }
 
-    return [...messageParts, ...functionCalls, ...functionResponses]
+    return [...messageParts, ...functionCalls]
 }
 
-/*
- * This is a dedicated logic for Multi Agent Supervisor to handle the case where the content is empty, and the role is the same
- */
-
-function checkIfEmptyContentAndSameRole(contents: Content[]) {
-    let prevRole = ''
-    const validContents: Content[] = []
-
-    for (const content of contents) {
-        // Skip only if completely empty
-        if (!content.parts || !content.parts.length) {
-            continue
-        }
-
-        // Ensure role is always either 'user' or 'model'
-        content.role = content.role === 'model' ? 'model' : 'user'
-
-        // Handle consecutive messages
-        if (content.role === prevRole && validContents.length > 0) {
-            // Merge with previous content if same role
-            validContents[validContents.length - 1].parts.push(...content.parts)
-            continue
-        }
-
-        validContents.push(content)
-        prevRole = content.role
-    }
-
-    return validContents
-}
-
-function convertBaseMessagesToContent(messages: BaseMessage[], isMultimodalModel: boolean) {
+export function convertBaseMessagesToContent(
+    messages: BaseMessage[],
+    isMultimodalModel: boolean,
+    convertSystemMessageToHumanContent: boolean = false,
+    model?: string
+) {
     return messages.reduce<{
         content: Content[]
         mergeWithPreviousContent: boolean
     }>(
         (acc, message, index) => {
-            if (!isBaseMessage(message)) {
+            if (!BaseMessage.isInstance(message)) {
                 throw new Error('Unsupported message input')
             }
             const author = getMessageAuthor(message)
@@ -559,7 +423,7 @@ function convertBaseMessagesToContent(messages: BaseMessage[], isMultimodalModel
                 throw new Error('Google Generative AI requires alternate messages between authors')
             }
 
-            const parts = convertMessageContentToParts(message, isMultimodalModel)
+            const parts = convertMessageContentToParts(message, isMultimodalModel, messages.slice(0, index), model)
 
             if (acc.mergeWithPreviousContent) {
                 const prevContent = acc.content[acc.content.length - 1]
@@ -574,8 +438,7 @@ function convertBaseMessagesToContent(messages: BaseMessage[], isMultimodalModel
                 }
             }
             let actualRole = role
-            if (actualRole === 'function' || actualRole === 'tool') {
-                // GenerativeAI API will throw an error if the role is not "user" or "model."
+            if (actualRole === 'function' || (actualRole === 'system' && !convertSystemMessageToHumanContent)) {
                 actualRole = 'user'
             }
             const content: Content = {
@@ -583,7 +446,7 @@ function convertBaseMessagesToContent(messages: BaseMessage[], isMultimodalModel
                 parts
             }
             return {
-                mergeWithPreviousContent: author === 'system',
+                mergeWithPreviousContent: author === 'system' && !convertSystemMessageToHumanContent,
                 content: [...acc.content, content]
             }
         },
@@ -591,7 +454,28 @@ function convertBaseMessagesToContent(messages: BaseMessage[], isMultimodalModel
     ).content
 }
 
-function mapGenerateContentResultToChatResult(
+// ============================================================================
+// Usage Metadata Conversion
+// ============================================================================
+
+export function convertUsageMetadata(usageMetadata: GenerateContentResponse['usageMetadata']): UsageMetadata {
+    const output: UsageMetadata = {
+        input_tokens: usageMetadata?.promptTokenCount ?? 0,
+        output_tokens: usageMetadata?.candidatesTokenCount ?? 0,
+        total_tokens: usageMetadata?.totalTokenCount ?? 0
+    }
+    if (usageMetadata?.cachedContentTokenCount) {
+        output.input_token_details ??= {}
+        output.input_token_details.cache_read = usageMetadata.cachedContentTokenCount
+    }
+    return output
+}
+
+// ============================================================================
+// Response Mapping Functions (with inlineData extraction)
+// ============================================================================
+
+export function mapGenerateContentResultToChatResult(
     response: EnhancedGenerateContentResponse,
     extra?: {
         usageMetadata: UsageMetadata | undefined
@@ -607,125 +491,446 @@ function mapGenerateContentResultToChatResult(
         }
     }
 
-    const functionCalls = response.functionCalls()
     const [candidate] = response.candidates
-    const { content, ...generationInfo } = candidate
-    const text = content?.parts[0]?.text ?? ''
+    const { content: candidateContent, ...generationInfo } = candidate
+
+    // Extract function calls with IDs
+    const functionCalls = candidateContent.parts?.reduce((acc, p) => {
+        if ('functionCall' in p && p.functionCall) {
+            acc.push({
+                ...p,
+                id: 'id' in p.functionCall && typeof (p.functionCall as any).id === 'string' ? (p.functionCall as any).id : uuidv4()
+            })
+        }
+        return acc
+    }, [] as (FunctionCallPart & { id: string })[])
+
+    let content: MessageContent | undefined
+    const inlineDataItems: any[] = []
+
+    const parts = candidateContent?.parts as GoogleGenerativeAIPart[] | undefined
+
+    if (Array.isArray(parts) && parts.length === 1 && 'text' in parts[0] && parts[0].text && !parts[0].thought) {
+        content = parts[0].text
+    } else if (Array.isArray(parts) && parts.length > 0) {
+        content = parts.map((p) => {
+            if (p.thought && 'text' in p && p.text) {
+                return {
+                    type: 'thinking' as const,
+                    thinking: p.text,
+                    ...(p.thoughtSignature ? { signature: p.thoughtSignature } : {})
+                }
+            } else if ('text' in p) {
+                return {
+                    type: 'text' as const,
+                    text: p.text
+                }
+            } else if ('inlineData' in p && p.inlineData) {
+                // Extract inline data (e.g., generated images) for processing
+                inlineDataItems.push({
+                    type: 'gemini_inline_data',
+                    mimeType: p.inlineData.mimeType,
+                    data: p.inlineData.data
+                })
+                return {
+                    type: 'inlineData' as const,
+                    inlineData: p.inlineData
+                }
+            } else if ('functionCall' in p) {
+                return {
+                    type: 'functionCall' as const,
+                    functionCall: p.functionCall
+                }
+            } else if ('functionResponse' in p) {
+                return {
+                    type: 'functionResponse' as const,
+                    functionResponse: p.functionResponse
+                }
+            } else if ('fileData' in p) {
+                return {
+                    type: 'fileData' as const,
+                    fileData: p.fileData
+                }
+            } else if ('executableCode' in p) {
+                return {
+                    type: 'executableCode' as const,
+                    executableCode: p.executableCode
+                }
+            } else if ('codeExecutionResult' in p) {
+                return {
+                    type: 'codeExecutionResult' as const,
+                    codeExecutionResult: p.codeExecutionResult
+                }
+            }
+            return p as any
+        })
+    } else {
+        content = []
+    }
+
+    // Extract thought signatures from function calls
+    const functionThoughtSignatures = functionCalls?.reduce((acc, fc) => {
+        if ('thoughtSignature' in fc && typeof (fc as any).thoughtSignature === 'string') {
+            acc[fc.id] = (fc as any).thoughtSignature
+        }
+        return acc
+    }, {} as Record<string, string>)
+
+    let text = ''
+    if (typeof content === 'string') {
+        text = content
+    } else if (Array.isArray(content) && content.length > 0) {
+        const block = content.find((b) => 'text' in b) as { text: string } | undefined
+        text = block?.text ?? text
+    }
+
+    // Build response_metadata with inline data if present
+    const response_metadata: Record<string, any> = {}
+    if (inlineDataItems.length > 0) {
+        response_metadata.inlineData = inlineDataItems
+    }
 
     const generation: ChatGeneration = {
         text,
         message: new AIMessage({
-            content: text,
-            tool_calls: functionCalls,
+            content: content ?? '',
+            tool_calls: functionCalls?.map((fc) => ({
+                type: 'tool_call' as const,
+                id: fc.id,
+                name: fc.functionCall.name,
+                args: fc.functionCall.args as Record<string, unknown>
+            })),
             additional_kwargs: {
-                ...generationInfo
+                ...generationInfo,
+                [_FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY]: functionThoughtSignatures
             },
-            usage_metadata: extra?.usageMetadata as any
+            usage_metadata: extra?.usageMetadata,
+            response_metadata: Object.keys(response_metadata).length > 0 ? response_metadata : undefined
         }),
         generationInfo
     }
 
     return {
-        generations: [generation]
+        generations: [generation],
+        llmOutput: {
+            tokenUsage: {
+                promptTokens: extra?.usageMetadata?.input_tokens,
+                completionTokens: extra?.usageMetadata?.output_tokens,
+                totalTokens: extra?.usageMetadata?.total_tokens
+            }
+        }
     }
 }
 
-function convertResponseContentToChatGenerationChunk(
+export function convertResponseContentToChatGenerationChunk(
     response: EnhancedGenerateContentResponse,
     extra: {
         usageMetadata?: UsageMetadata | undefined
         index: number
     }
 ): ChatGenerationChunk | null {
-    if (!response || !response.candidates || response.candidates.length === 0) {
+    if (!response.candidates || response.candidates.length === 0) {
         return null
     }
-    const functionCalls = response.functionCalls()
+
     const [candidate] = response.candidates
-    const { content, ...generationInfo } = candidate
-    const text = content?.parts?.[0]?.text ?? ''
+    const { content: candidateContent, ...generationInfo } = candidate
+
+    // Extract function calls with IDs
+    const functionCalls = candidateContent.parts?.reduce((acc, p) => {
+        if ('functionCall' in p && p.functionCall) {
+            acc.push({
+                ...p,
+                id: 'id' in p.functionCall && typeof (p.functionCall as any).id === 'string' ? (p.functionCall as any).id : uuidv4()
+            })
+        }
+        return acc
+    }, [] as (FunctionCallPart & { id: string })[])
+
+    let content: MessageContent | undefined
+    const inlineDataItems: any[] = []
+    const streamParts = candidateContent?.parts as GoogleGenerativeAIPart[] | undefined
+
+    // Checks if all parts are plain text (no thought flags). If so, join as string.
+    if (Array.isArray(streamParts) && streamParts.every((p) => 'text' in p && !p.thought)) {
+        content = streamParts.map((p) => (p as TextPart).text).join('')
+    } else if (Array.isArray(streamParts)) {
+        content = streamParts.map((p) => {
+            if (p.thought && 'text' in p && p.text) {
+                return {
+                    type: 'thinking' as const,
+                    thinking: p.text,
+                    ...(p.thoughtSignature ? { signature: p.thoughtSignature } : {})
+                }
+            } else if ('text' in p) {
+                return {
+                    type: 'text' as const,
+                    text: p.text
+                }
+            } else if ('inlineData' in p && p.inlineData) {
+                // Extract inline data for streaming responses
+                inlineDataItems.push({
+                    type: 'gemini_inline_data',
+                    mimeType: p.inlineData.mimeType,
+                    data: p.inlineData.data
+                })
+                return {
+                    type: 'inlineData' as const,
+                    inlineData: p.inlineData
+                }
+            } else if ('functionCall' in p) {
+                return {
+                    type: 'functionCall' as const,
+                    functionCall: p.functionCall
+                }
+            } else if ('functionResponse' in p) {
+                return {
+                    type: 'functionResponse' as const,
+                    functionResponse: p.functionResponse
+                }
+            } else if ('fileData' in p) {
+                return {
+                    type: 'fileData' as const,
+                    fileData: p.fileData
+                }
+            } else if ('executableCode' in p) {
+                return {
+                    type: 'executableCode' as const,
+                    executableCode: p.executableCode
+                }
+            } else if ('codeExecutionResult' in p) {
+                return {
+                    type: 'codeExecutionResult' as const,
+                    codeExecutionResult: p.codeExecutionResult
+                }
+            }
+            return p as any
+        })
+    } else {
+        content = []
+    }
+
+    let text = ''
+    if (content && typeof content === 'string') {
+        text = content
+    } else if (Array.isArray(content)) {
+        const block = content.find((b) => 'text' in b) as { text: string } | undefined
+        text = block?.text ?? ''
+    }
 
     const toolCallChunks: ToolCallChunk[] = []
     if (functionCalls) {
         toolCallChunks.push(
             ...functionCalls.map((fc) => ({
-                ...fc,
-                args: JSON.stringify(fc.args),
-                index: extra.index
+                type: 'tool_call_chunk' as const,
+                id: fc.id,
+                name: fc.functionCall.name,
+                args: JSON.stringify(fc.functionCall.args)
             }))
         )
     }
+
+    // Extract thought signatures from function calls
+    const functionThoughtSignatures = functionCalls?.reduce((acc, fc) => {
+        if ('thoughtSignature' in fc && typeof (fc as any).thoughtSignature === 'string') {
+            acc[fc.id] = (fc as any).thoughtSignature
+        }
+        return acc
+    }, {} as Record<string, string>)
+
+    // Build response_metadata with inline data if present
+    const response_metadata: Record<string, any> = {
+        model_provider: 'google-genai'
+    }
+    if (inlineDataItems.length > 0) {
+        response_metadata.inlineData = inlineDataItems
+    }
+
     return new ChatGenerationChunk({
         text,
         message: new AIMessageChunk({
-            content: text,
-            name: !content ? undefined : content.role,
+            content: content || '',
+            name: !candidateContent ? undefined : candidateContent.role,
             tool_call_chunks: toolCallChunks,
-            // Each chunk can have unique "generationInfo", and merging strategy is unclear,
-            // so leave blank for now.
-            additional_kwargs: {},
-            usage_metadata: extra.usageMetadata as any
+            additional_kwargs: {
+                [_FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY]: functionThoughtSignatures
+            },
+            response_metadata,
+            usage_metadata: extra.usageMetadata
         }),
         generationInfo
     })
 }
 
-function zodToGeminiParameters(zodObj: any) {
-    // Gemini doesn't accept either the $schema or additionalProperties
-    // attributes, so we need to explicitly remove them.
-    const jsonSchema: any = zodToJsonSchema(zodObj)
-    // eslint-disable-next-line unused-imports/no-unused-vars
-    const { $schema, additionalProperties, ...rest } = jsonSchema
+// ============================================================================
+// Extended ChatGoogleGenerativeAI Class
+// ============================================================================
 
-    // Ensure all properties have type specified
-    if (rest.properties) {
-        Object.keys(rest.properties).forEach((key) => {
-            const prop = rest.properties[key]
+export class ChatGoogleGenerativeAI extends LangchainChatGoogleGenerativeAI implements IVisionChatModal {
+    configuredModel: string
+    configuredMaxToken?: number
+    multiModalOption: IMultiModalOption
+    id: string
 
-            // Handle enum types
-            if (prop.enum?.length) {
-                rest.properties[key] = {
-                    type: 'string',
-                    format: 'enum',
-                    enum: prop.enum
-                }
-            }
-            // Handle missing type
-            else if (!prop.type && !prop.oneOf && !prop.anyOf && !prop.allOf) {
-                // Infer type from other properties
-                if (prop.minimum !== undefined || prop.maximum !== undefined) {
-                    prop.type = 'number'
-                } else if (prop.format === 'date-time') {
-                    prop.type = 'string'
-                } else if (prop.items) {
-                    prop.type = 'array'
-                } else if (prop.properties) {
-                    prop.type = 'object'
-                } else {
-                    // Default to string if type can't be inferred
-                    prop.type = 'string'
-                }
-            }
-        })
+    constructor(id: string, fields: GoogleGenerativeAIChatInput) {
+        super(fields)
+        this.id = id
+        this.configuredModel = fields?.model ?? ''
+        this.configuredMaxToken = fields?.maxOutputTokens
     }
 
-    return rest
-}
+    /**
+     * Override _generate to use custom response mapper that extracts inlineData
+     */
+    async _generate(
+        messages: BaseMessage[],
+        options: this['ParsedCallOptions'],
+        runManager?: CallbackManagerForLLMRun
+    ): Promise<ChatResult> {
+        options.signal?.throwIfAborted()
 
-function convertToGeminiTools(structuredTools: (StructuredToolInterface | Record<string, unknown>)[]) {
-    return [
-        {
-            functionDeclarations: structuredTools.map((structuredTool) => {
-                if (isStructuredTool(structuredTool)) {
-                    const jsonSchema = zodToGeminiParameters(structuredTool.schema)
-                    return {
-                        name: structuredTool.name,
-                        description: structuredTool.description,
-                        parameters: jsonSchema
-                    }
-                }
-                return structuredTool
-            })
+        const prompt = convertBaseMessagesToContent(
+            messages,
+            (this as any)._isMultimodalModel,
+            (this as any).useSystemInstruction,
+            this.model
+        )
+
+        // Handle system instruction
+        let actualPrompt = prompt
+        if (prompt[0]?.role === 'system') {
+            const [systemInstruction] = prompt
+            ;(this as any).client.systemInstruction = systemInstruction
+            actualPrompt = prompt.slice(1)
         }
-    ]
+
+        // Get tools and other params
+        const parameters = this.invocationParams(options)
+
+        // Check if streaming is enabled
+        if (this.streaming) {
+            const tokenUsage: { completionTokens?: number; promptTokens?: number; totalTokens?: number } = {}
+            const stream = this._streamResponseChunks(messages, options, runManager)
+            const finalChunks: ChatGenerationChunk[] = []
+
+            for await (const chunk of stream) {
+                const index = (chunk.generationInfo as any)?.completion ?? 0
+                if (finalChunks[index] === undefined) {
+                    finalChunks[index] = chunk
+                } else {
+                    finalChunks[index] = finalChunks[index].concat(chunk)
+                }
+            }
+            const generations = finalChunks.filter((c): c is ChatGenerationChunk => c !== undefined)
+
+            return { generations, llmOutput: { estimatedTokenUsage: tokenUsage } }
+        }
+
+        // Non-streaming: make the API call directly
+        const res = await (this as any).completionWithRetry({
+            ...parameters,
+            contents: actualPrompt
+        })
+
+        let usageMetadata: UsageMetadata | undefined
+        if ('usageMetadata' in res.response) {
+            usageMetadata = convertUsageMetadata(res.response.usageMetadata)
+        }
+
+        const generationResult = mapGenerateContentResultToChatResult(res.response, {
+            usageMetadata
+        })
+        // may not have generations in output if there was a refusal for safety reasons, malformed function call, etc.
+        if (generationResult.generations?.length > 0) {
+            await runManager?.handleLLMNewToken(generationResult.generations[0]?.text ?? '')
+        }
+        return generationResult
+    }
+
+    /**
+     * Override streaming method to use custom chunk converter that extracts inlineData
+     */
+    async *_streamResponseChunks(
+        messages: BaseMessage[],
+        options: this['ParsedCallOptions'],
+        runManager?: CallbackManagerForLLMRun
+    ): AsyncGenerator<ChatGenerationChunk> {
+        const prompt = convertBaseMessagesToContent(
+            messages,
+            (this as any)._isMultimodalModel,
+            (this as any).useSystemInstruction,
+            this.model
+        )
+
+        let actualPrompt = prompt
+        if (prompt[0]?.role === 'system') {
+            const [systemInstruction] = prompt
+            ;(this as any).client.systemInstruction = systemInstruction
+            actualPrompt = prompt.slice(1)
+        }
+
+        const parameters = this.invocationParams(options)
+        const request = {
+            ...parameters,
+            contents: actualPrompt
+        }
+
+        const stream = await (this as any).caller.callWithOptions({ signal: options?.signal }, async () => {
+            const { stream } = await (this as any).client.generateContentStream(request, {
+                signal: options?.signal
+            })
+            return stream
+        })
+
+        let usageMetadata: UsageMetadata | undefined
+        // Keep prior cumulative counts for calculating token deltas while streaming
+        let prevPromptTokenCount = 0
+        let prevCandidatesTokenCount = 0
+        let prevTotalTokenCount = 0
+        let index = 0
+
+        for await (const response of stream) {
+            if (options.signal?.aborted) {
+                return
+            }
+            if (
+                'usageMetadata' in response &&
+                response.usageMetadata !== undefined &&
+                (this as any).streamUsage !== false &&
+                options.streamUsage !== false
+            ) {
+                usageMetadata = convertUsageMetadata(response.usageMetadata)
+
+                // Under the hood, LangChain combines the prompt tokens. Google returns the updated
+                // total each time, so we need to find the difference between the tokens.
+                const newPromptTokenCount = response.usageMetadata.promptTokenCount ?? 0
+                usageMetadata.input_tokens = Math.max(0, newPromptTokenCount - prevPromptTokenCount)
+                prevPromptTokenCount = newPromptTokenCount
+
+                const newCandidatesTokenCount = response.usageMetadata.candidatesTokenCount ?? 0
+                usageMetadata.output_tokens = Math.max(0, newCandidatesTokenCount - prevCandidatesTokenCount)
+                prevCandidatesTokenCount = newCandidatesTokenCount
+
+                const newTotalTokenCount = response.usageMetadata.totalTokenCount ?? 0
+                usageMetadata.total_tokens = Math.max(0, newTotalTokenCount - prevTotalTokenCount)
+                prevTotalTokenCount = newTotalTokenCount
+            }
+
+            const chunk = convertResponseContentToChatGenerationChunk(response, {
+                usageMetadata,
+                index
+            })
+            index += 1
+            if (!chunk) {
+                continue
+            }
+
+            yield chunk
+            await runManager?.handleLLMNewToken(chunk.text ?? '')
+        }
+    }
+
+    setMultiModalOption(multiModalOption: IMultiModalOption): void {
+        this.multiModalOption = multiModalOption
+    }
 }

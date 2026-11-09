@@ -10,6 +10,7 @@ import {
     NodeWithScore
 } from 'llamaindex'
 import { reformatSourceDocuments } from '../EngineUtils'
+import { EvaluationRunTracerLlama } from '../../../evaluation/EvaluationRunTracerLlama'
 
 class QueryEngine_LlamaIndex implements INode {
     label: string
@@ -24,6 +25,8 @@ class QueryEngine_LlamaIndex implements INode {
     inputs: INodeParams[]
     outputs: INodeOutputsValue[]
     sessionId?: string
+    badge: string
+    deprecateMessage: string
 
     constructor(fields?: { sessionId?: string }) {
         this.label = 'Query Engine'
@@ -35,6 +38,8 @@ class QueryEngine_LlamaIndex implements INode {
         this.description = 'Simple query engine built to answer question over your data, without memory'
         this.baseClasses = [this.type, 'BaseQueryEngine']
         this.tags = ['LlamaIndex']
+        this.badge = 'DEPRECATING'
+        this.deprecateMessage = 'LlamaIndex integration is deprecated and will be removed in a future release.'
         this.inputs = [
             {
                 label: 'Vector Store Retriever',
@@ -71,6 +76,8 @@ class QueryEngine_LlamaIndex implements INode {
         let sourceDocuments: ICommonObject[] = []
         let sourceNodes: NodeWithScore<Metadata>[] = []
         let isStreamingStarted = false
+
+        await EvaluationRunTracerLlama.injectEvaluationMetadata(nodeData, options, queryEngine)
 
         const shouldStreamResponse = options.shouldStreamResponse
         const sseStreamer: IServerSideEventStreamer = options.sseStreamer as IServerSideEventStreamer

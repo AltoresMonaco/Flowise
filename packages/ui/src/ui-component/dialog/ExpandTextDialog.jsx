@@ -7,10 +7,10 @@ import PerfectScrollbar from 'react-perfect-scrollbar'
 // MUI
 import { Button, Dialog, DialogActions, DialogContent, Typography } from '@mui/material'
 import { useTheme } from '@mui/material/styles'
-import { LoadingButton } from '@mui/lab'
 
 // Project Import
 import { StyledButton } from '@/ui-component/button/StyledButton'
+import { PermissionLoadingButton } from '@/ui-component/button/RBACButtons'
 import { CodeEditor } from '@/ui-component/editor/CodeEditor'
 
 // Store
@@ -83,7 +83,7 @@ const ExpandTextDialog = ({ show, dialogProps, onCancel, onInputHintDialogClicke
     useEffect(() => {
         if (executeCustomFunctionNodeApi.error) {
             if (typeof executeCustomFunctionNodeApi.error === 'object' && executeCustomFunctionNodeApi.error?.response?.data) {
-                setCodeExecutedResult(JSON.stringify(executeCustomFunctionNodeApi.error?.response?.data, null, 2))
+                setCodeExecutedResult(executeCustomFunctionNodeApi.error?.response?.data)
             } else if (typeof executeCustomFunctionNodeApi.error === 'string') {
                 setCodeExecutedResult(executeCustomFunctionNodeApi.error)
             }
@@ -118,7 +118,7 @@ const ExpandTextDialog = ({ show, dialogProps, onCancel, onInputHintDialogClicke
                                     borderColor: theme.palette.grey['500'],
                                     borderRadius: '12px',
                                     height: '100%',
-                                    maxHeight: languageType === 'js' ? 'calc(100vh - 330px)' : 'calc(100vh - 220px)',
+                                    maxHeight: languageType === 'js' ? 'calc(100vh - 250px)' : 'calc(100vh - 220px)',
                                     overflowX: 'hidden',
                                     backgroundColor: 'white'
                                 }}
@@ -126,7 +126,7 @@ const ExpandTextDialog = ({ show, dialogProps, onCancel, onInputHintDialogClicke
                                 <CodeEditor
                                     disabled={dialogProps.disabled}
                                     value={inputValue}
-                                    height={languageType === 'js' ? 'calc(100vh - 330px)' : 'calc(100vh - 220px)'}
+                                    height={languageType === 'js' ? 'calc(100vh - 250px)' : 'calc(100vh - 220px)'}
                                     theme={customization.isDarkMode ? 'dark' : 'light'}
                                     lang={languageType}
                                     placeholder={inputParam.placeholder}
@@ -147,7 +147,8 @@ const ExpandTextDialog = ({ show, dialogProps, onCancel, onInputHintDialogClicke
                     )}
                 </div>
                 {languageType === 'js' && !inputParam.hideCodeExecute && (
-                    <LoadingButton
+                    <PermissionLoadingButton
+                        permissionId='chatflows:create,chatflows:update,agentflows:create,agentflows:update'
                         sx={{
                             mt: 2,
                             '&:hover': {
@@ -169,13 +170,15 @@ const ExpandTextDialog = ({ show, dialogProps, onCancel, onInputHintDialogClicke
                         }}
                     >
                         Execute
-                    </LoadingButton>
+                    </PermissionLoadingButton>
                 )}
                 {codeExecutedResult && (
                     <div style={{ marginTop: '15px' }}>
                         <CodeEditor
                             disabled={true}
-                            value={codeExecutedResult.toString()}
+                            value={
+                                typeof codeExecutedResult === 'object' ? JSON.stringify(codeExecutedResult, null, 2) : codeExecutedResult
+                            }
                             height='max-content'
                             theme={customization.isDarkMode ? 'dark' : 'light'}
                             lang={'js'}

@@ -1,0 +1,164 @@
+# Altores staging pipeline for the Flowise fork (App OS app `flowise-staging`).
+#
+# Every pull request and every push to develop runs the security gates:
+#   - gitleaks on the full history (findings reviewed in .gitleaksignore),
+#   - Trivy on the dependencies (pnpm-lock.yaml) and on the built image.
+# Trivy fails on CRITICAL/HIGH findings that have a fix; findings without a fix are
+# listed in the job log (and the job summary) without failing the build.
+#
+# A push to develop (or a manual run on develop) then publishes
+# ghcr.io/altoresmonaco/flowise:staging and restarts the stack on workstation-7.
+# App OS provisions the secrets below with `alto ci ensure flowise-staging` and
+# prepares the node with `alto deploy bootstrap` (runbook: App OS docs/23).
+# Production (agent.altores.app) is never touched by this workflow.
+
+name: Deploy staging
+
+on:
+    push:
+        branches: [develop]
+    pull_request:
+        branches: [develop]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: deploy-staging-${{ github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+    IMAGE: ghcr.io/altoresmonaco/flowise
+    TRIVY_IMAGE: aquasec/trivy:0.69.3
+    GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1
+
+jobs:
+    gitleaks:
+        name: Secret scan
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+            - name: Scan the full history
+              run: |
+                  docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" "$GITLEAKS_IMAGE" \
+                    git --redact --no-banner --verbose /repo
+
+    dependencies:
+        name: Dependency scan (Trivy)
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - name: Fail on CRITICAL/HIGH findings that have a fix
+              run: |
+                  docker run --rm -v "$PWD:/repo:ro" "$TRIVY_IMAGE" fs --quiet --scanners vuln \
+                    --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 /repo
+            - name: List CRITICAL/HIGH findings without a fix
+              if: always()
+              run: |
+                  {
+                    echo '### Dependency findings without a fix'
+                    echo '```'
+                    docker run --rm -v "$PWD:/repo:ro" "$TRIVY_IMAGE" fs --quiet --scanners vuln \
+                      --severity CRITICAL,HIGH --format template \
+                      --template '{{ range . }}{{ range .Vulnerabilities }}{{ if not .FixedVersion }}{{ .Severity }} {{ .PkgName }} {{ .InstalledVersion }} {{ .VulnerabilityID }}{{ "\n" }}{{ end }}{{ end }}{{ end }}' \
+                      /repo | sort -u
+                    echo '```'
+                  } | tee -a "$GITHUB_STEP_SUMMARY"
+
+    image:
+        name: Build, scan and publish the image
+        needs: [gitleaks, dependencies]
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+        outputs:
+            digest: ${{ steps.push.outputs.digest }}
+        steps:
+            - uses: actions/checkout@v4
+            - uses: docker/setup-buildx-action@v3
+            - name: Build
+              uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  load: true
+                  tags: flowise:ci
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+            - name: Fail on CRITICAL/HIGH image findings that have a fix
+              run: |
+                  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" image --quiet \
+                    --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 flowise:ci
+            - name: List CRITICAL/HIGH image findings without a fix
+              if: always()
+              run: |
+                  {
+                    echo '### Image findings without a fix'
+                    echo '```'
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" image --quiet \
+                      --scanners vuln --severity CRITICAL,HIGH --format template \
+                      --template '{{ range . }}{{ range .Vulnerabilities }}{{ if not .FixedVersion }}{{ .Severity }} {{ .PkgName }} {{ .InstalledVersion }} {{ .VulnerabilityID }}{{ "\n" }}{{ end }}{{ end }}{{ end }}' \
+                      flowise:ci | sort -u
+                    echo '```'
+                  } | tee -a "$GITHUB_STEP_SUMMARY"
+            - name: Log in to GHCR
+              if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+            - name: Publish :staging and :sha-<commit>
+              id: push
+              if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+              run: |
+                  short="sha-${GITHUB_SHA::12}"
+                  docker tag flowise:ci "$IMAGE:$short"
+                  docker tag flowise:ci "$IMAGE:staging"
+                  docker push "$IMAGE:$short"
+                  docker push "$IMAGE:staging"
+                  echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:staging")" >> "$GITHUB_OUTPUT"
+
+    deploy:
+        name: Deploy to staging (workstation-7)
+        needs: image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+        runs-on: ubuntu-latest
+        environment: staging
+        permissions:
+            contents: read
+            packages: read
+        steps:
+            - name: Restart the stack on the new image
+              env:
+                  STAGING_HOST: ${{ secrets.STAGING_HOST }}
+                  STAGING_SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+                  STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+                  GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              # The node pulls with this run's GITHUB_TOKEN, in a throwaway Docker config,
+              # instead of relying on a static credential left on the node (same pattern as
+              # support-portal's staging pipeline). The token travels on stdin, never as an
+              # argument, and is revoked when the job ends.
+              run: |
+                  install -m 700 -d ~/.ssh
+                  printf '%s\n' "$STAGING_SSH_KEY" > ~/.ssh/deploy_key
+                  chmod 600 ~/.ssh/deploy_key
+                  # The remote script reads the token from stdin, logs in to a temporary
+                  # DOCKER_CONFIG removed on exit, then pulls and restarts the stack.
+                  printf '%s\n' "$GHCR_TOKEN" | ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+                    "$STAGING_SSH_USER@$STAGING_HOST" "GHCR_USER=$GITHUB_ACTOR"'
+                    set -eu
+                    IFS= read -r token
+                    DOCKER_CONFIG="$(mktemp -d)"; export DOCKER_CONFIG
+                    trap "rm -rf \"$DOCKER_CONFIG\"" EXIT
+                    printf "%s" "$token" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null
+                    unset token
+                    cd /opt/apps/flowise-staging
+                    docker compose -f docker-compose.staging.yml pull flowise-staging
+                    docker compose -f docker-compose.staging.yml up -d'
+                  rm -f ~/.ssh/deploy_key
+            - name: Record the deployed digest
+              run: echo "Deployed ${{ needs.image.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

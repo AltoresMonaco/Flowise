@@ -1,7 +1,7 @@
 import { flatten } from 'lodash'
 import { createClient, SearchOptions } from 'redis'
 import { Embeddings } from '@langchain/core/embeddings'
-import { RedisVectorStore, RedisVectorStoreConfig } from '@langchain/community/vectorstores/redis'
+import { RedisVectorStore, RedisVectorStoreConfig } from '@langchain/redis'
 import { Document } from '@langchain/core/documents'
 import { ICommonObject, INode, INodeData, INodeOutputsValue, INodeParams, IndexingResult } from '../../../src/Interface'
 import { getBaseClasses, getCredentialData, getCredentialParam } from '../../../src/utils'
@@ -147,11 +147,23 @@ class Redis_VectorStores implements INode {
             }
 
             try {
-                const redisClient = createClient({ url: redisUrl })
+                const redisClient = createClient({
+                    url: redisUrl,
+                    socket: {
+                        keepAlive:
+                            process.env.REDIS_KEEP_ALIVE && !isNaN(parseInt(process.env.REDIS_KEEP_ALIVE, 10))
+                                ? parseInt(process.env.REDIS_KEEP_ALIVE, 10)
+                                : undefined
+                    },
+                    pingInterval:
+                        process.env.REDIS_KEEP_ALIVE && !isNaN(parseInt(process.env.REDIS_KEEP_ALIVE, 10))
+                            ? parseInt(process.env.REDIS_KEEP_ALIVE, 10)
+                            : undefined // Add Redis protocol-level pings
+                })
                 await redisClient.connect()
 
                 const storeConfig: RedisVectorStoreConfig = {
-                    redisClient: redisClient,
+                    redisClient: redisClient as any,
                     indexName: indexName
                 }
                 const isIndexExists = await checkIndexExists(redisClient, indexName)
@@ -212,10 +224,22 @@ class Redis_VectorStores implements INode {
             redisUrl = 'redis://' + username + ':' + password + '@' + host + ':' + portStr
         }
 
-        const redisClient = createClient({ url: redisUrl })
+        const redisClient = createClient({
+            url: redisUrl,
+            socket: {
+                keepAlive:
+                    process.env.REDIS_KEEP_ALIVE && !isNaN(parseInt(process.env.REDIS_KEEP_ALIVE, 10))
+                        ? parseInt(process.env.REDIS_KEEP_ALIVE, 10)
+                        : undefined
+            },
+            pingInterval:
+                process.env.REDIS_KEEP_ALIVE && !isNaN(parseInt(process.env.REDIS_KEEP_ALIVE, 10))
+                    ? parseInt(process.env.REDIS_KEEP_ALIVE, 10)
+                    : undefined // Add Redis protocol-level pings
+        })
 
         const storeConfig: RedisVectorStoreConfig = {
-            redisClient: redisClient,
+            redisClient: redisClient as any,
             indexName: indexName
         }
 

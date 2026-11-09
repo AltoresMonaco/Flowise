@@ -1,5 +1,5 @@
 import { BaseLanguageModel } from '@langchain/core/language_models/base'
-import { MultiPromptChain } from 'langchain/chains'
+import { MultiPromptChain } from '@langchain/classic/chains'
 import { ICommonObject, INode, INodeData, INodeParams, IServerSideEventStreamer, PromptRetriever } from '../../../src/Interface'
 import { getBaseClasses } from '../../../src/utils'
 import { ConsoleCallbackHandler, CustomChainHandler, additionalCallbacks } from '../../../src/handler'
@@ -16,11 +16,13 @@ class MultiPromptChain_Chains implements INode {
     baseClasses: string[]
     description: string
     inputs: INodeParams[]
+    badge: string
 
     constructor() {
         this.label = 'Multi Prompt Chain'
         this.name = 'multiPromptChain'
         this.version = 2.0
+        this.badge = 'DEPRECATING'
         this.type = 'MultiPromptChain'
         this.icon = 'prompt.svg'
         this.category = 'Chains'
@@ -66,7 +68,7 @@ class MultiPromptChain_Chains implements INode {
             promptNames,
             promptDescriptions,
             promptTemplates,
-            llmChainOpts: { verbose: process.env.DEBUG === 'true' }
+            llmChainOpts: { verbose: process.env.DEBUG === 'true' ? true : false }
         })
 
         return chain
@@ -95,7 +97,7 @@ class MultiPromptChain_Chains implements INode {
         }
         const obj = { input }
 
-        const loggerHandler = new ConsoleCallbackHandler(options.logger)
+        const loggerHandler = new ConsoleCallbackHandler(options.logger, options?.orgId)
         const callbacks = await additionalCallbacks(nodeData, options)
 
         if (shouldStreamResponse) {

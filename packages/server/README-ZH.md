@@ -1,12 +1,12 @@
 <!-- markdownlint-disable MD030 -->
 
-# Flowise - 低代码 LLM 应用程序构建器
+# Flowise
 
 [English](./README.md) | 中文
 
-![Flowise](https://github.com/FlowiseAI/Flowise/blob/main/images/flowise.gif?raw=true)
+<h3>以可视化方式构建 AI Agents</h3>
 
-拖放界面来构建自定义的 LLM 流程
+![Flowise](https://github.com/FlowiseAI/Flowise/blob/main/images/flowise_agentflow.gif?raw=true)
 
 ## ⚡ 快速入门
 
@@ -22,18 +22,9 @@
 
 3. 打开[http://localhost:3000](http://localhost:3000)
 
-## 🔒 身份验证
-
-要启用应用级身份验证，请将`FLOWISE_USERNAME`和`FLOWISE_PASSWORD`添加到`.env`文件中：
-
-```
-FLOWISE_USERNAME=user
-FLOWISE_PASSWORD=1234
-```
-
 ## 🌱 环境变量
 
-Flowise 支持不同的环境变量来配置您的实例。您可以在`packages/server`文件夹中的`.env`文件中指定以下变量。阅读[更多](https://docs.flowiseai.com/environment-variables)
+Flowise 支持不同的环境变量来配置您的实例。您可以在`packages/server`文件夹中的`.env`文件中指定以下变量。阅读[更多](https://docs.flowiseai.com/configuration/environment-variables)
 
 您还可以在使用`npx`时指定环境变量。例如：
 
@@ -64,7 +55,7 @@ npx flowise start --PORT=3000 --DEBUG=true
 
         [![部署到 Render](https://render.com/images/deploy-to-render-button.svg)](https://docs.flowiseai.com/deployment/render)
 
-    -   [HuggingFace Spaces](https://docs.flowiseai.com/deployment/hugging-face)
+    -   [HuggingFace Spaces](https://docs.flowiseai.com/configuration/deployment/hugging-face)
 
         <a href="https://huggingface.co/spaces/FlowiseAI/Flowise"><img src="https://huggingface.co/datasets/huggingface/badges/raw/main/open-in-hf-spaces-sm.svg" alt="HuggingFace Spaces"></a>
 

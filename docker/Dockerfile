@@ -1,35 +1,40 @@
-# Stage 1: Build frontend and backend
-FROM node:20-alpine AS build
+# Node.js version (overridable via build-arg from CI)
+ARG NODE_VERSION=24
 
-WORKDIR /app
+# Stage 1: Build stage
+FROM node:${NODE_VERSION}-alpine AS build
 
-# Copy your local Flowise repo into image
-COPY . .
+USER root
 
-# Skip puppeteer chromium download during install
+# Install build dependencies
+RUN apk add --no-cache git python3 py3-pip make g++ build-base cairo-dev pango-dev
+
+# Skip downloading Chrome for Puppeteer (saves build time)
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 
-# Install dependencies
-RUN yarn install
+# Install latest Flowise globally (specific version can be set: flowise@1.0.0)
+# npm dedupe is required after install: npm's overrides resolver does not
+# consistently collapse every duplicate of an overridden package in one pass
+# on a tree this size/complexity
+RUN npm install -g flowise && npm --prefix "$(npm root -g)/flowise" dedupe
 
-# Build everything (both frontend and backend)
-RUN yarn build
-
-# Stage 2: Runtime
-FROM node:20-alpine
-
-WORKDIR /app
+# Stage 2: Runtime stage
+FROM node:${NODE_VERSION}-alpine
 
 # Install runtime dependencies
 RUN apk add --no-cache chromium git python3 py3-pip make g++ build-base cairo-dev pango-dev curl
 
+# Set the environment variable for Puppeteer to find Chromium
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-# Copy built app from previous stage
-COPY --from=build /app /app
+# Copy Flowise from the build stage
+COPY --from=build /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=build /usr/local/bin /usr/local/bin
 
-# Optional: expose port
-EXPOSE 3000
+# Give the node user ownership of the installed package (node:*-alpine already has this user)
+RUN chown -R node:node /usr/local/lib/node_modules /usr/local/bin
 
-# Start Flowise
-CMD ["yarn", "start"]
+# Switch to non-root user
+USER node
+
+ENTRYPOINT ["flowise", "start"]
