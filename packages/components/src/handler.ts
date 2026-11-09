@@ -387,18 +387,20 @@ export class CustomChainHandler extends BaseCallbackHandler {
         fields?: HandleLLMNewTokenCallbackFields
     ): void | Promise<void> {
         if (this.skipK === 0) {
-            const reasoning = extractReasoningDelta(fields?.chunk as ChatGenerationChunk | undefined)
-            if (reasoning) {
-                // Reasoning summaries (Responses API) arrive with an empty token: stream them as thinking events.
-                if (this.thinkingStartTime === null) this.thinkingStartTime = Date.now()
-                if (this.sseStreamer) this.sseStreamer.streamThinkingEvent(this.chatId, reasoning)
+            // Reasoning summaries (Responses API) arrive with an empty token. Only a content-free
+            // `reasoning` signal is streamed: the summary text never leaves the server, since this
+            // stream can reach an end customer's browser.
+            if (extractReasoningDelta(fields?.chunk as ChatGenerationChunk | undefined)) {
+                if (this.thinkingStartTime === null) {
+                    this.thinkingStartTime = Date.now()
+                    if (this.sseStreamer) this.sseStreamer.streamCustomEvent(this.chatId, 'reasoning', { status: 'started' })
+                }
                 return
             }
             if (token && this.thinkingStartTime !== null) {
-                // First answer token after reasoning: close the thinking block with its duration.
                 const duration = Math.round((Date.now() - this.thinkingStartTime) / 1000)
                 this.thinkingStartTime = null
-                if (this.sseStreamer) this.sseStreamer.streamThinkingEvent(this.chatId, '', duration)
+                if (this.sseStreamer) this.sseStreamer.streamCustomEvent(this.chatId, 'reasoning', { status: 'done', duration })
             }
             if (!this.isLLMStarted) {
                 this.isLLMStarted = true
@@ -421,7 +423,28 @@ export class CustomChainHandler extends BaseCallbackHandler {
         }
     }
 
+    handleToolStart(
+        tool: Serialized,
+        _input: string,
+        _runId?: string,
+        _parentRunId?: string,
+        _tags?: string[],
+        _metadata?: Record<string, unknown>,
+        runName?: string
+    ): void {
+        // Tool name only: the tool input can hold customer data and must not be streamed.
+        if (!this.sseStreamer) return
+        const name = runName || (typeof tool === 'object' && (tool as any)?.name) || 'unknown-tool'
+        this.sseStreamer.streamCustomEvent(this.chatId, 'toolStart', { name })
+    }
+
     handleLLMEnd() {
+        if (this.thinkingStartTime !== null) {
+            // Reasoning followed by a tool call, with no answer token: close the reasoning phase here.
+            const duration = Math.round((Date.now() - this.thinkingStartTime) / 1000)
+            this.thinkingStartTime = null
+            if (this.sseStreamer) this.sseStreamer.streamCustomEvent(this.chatId, 'reasoning', { status: 'done', duration })
+        }
         if (this.sseStreamer) {
             this.sseStreamer.streamEndEvent(this.chatId)
         }
