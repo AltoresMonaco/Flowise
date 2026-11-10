@@ -28,7 +28,10 @@ RUN pnpm install --frozen-lockfile && \
 FROM node:24-alpine
 
 # Runtime libraries only (cairo/pango for canvas, chromium for the web loaders).
-RUN apk add --no-cache libc6-compat cairo pango libjpeg-turbo giflib pixman librsvg chromium curl && \
+# `apk upgrade` first: packages already in the base image are not updated by `apk add`,
+# so a fixed CVE in one of them (libxslt, 11/2026) kept failing the image scan.
+RUN apk upgrade --no-cache && \
+    apk add --no-cache libc6-compat cairo pango libjpeg-turbo giflib pixman librsvg chromium curl && \
     rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
            /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
