@@ -189,7 +189,7 @@ export class SecureZodSchemaParser {
         const type: { base: string; modifiers: any[]; baseArgs?: any[] } = { base: '', modifiers: [] }
 
         // Handle chained methods like z.string().max(500).optional()
-        const parts = typeStr.split('.')
+        const parts = this.splitTopLevel(typeStr, '.')
 
         for (let i = 0; i < parts.length; i++) {
             const part = parts[i].trim()
@@ -204,7 +204,7 @@ export class SecureZodSchemaParser {
 
             if (i === 1) {
                 // Second part is the base type
-                const baseMatch = part.match(/^(\w+)(\(.*\))?$/)
+                const baseMatch = part.match(/^(\w+)(\([\s\S]*\))?$/)
                 if (!baseMatch) {
                     throw new Error(`Invalid base type: ${part}`)
                 }
@@ -217,7 +217,7 @@ export class SecureZodSchemaParser {
                 }
             } else {
                 // Subsequent parts are modifiers
-                const modMatch = part.match(/^(\w+)(\(.*\))?$/)
+                const modMatch = part.match(/^(\w+)(\([\s\S]*\))?$/)
                 if (!modMatch) {
                     throw new Error(`Invalid modifier: ${part}`)
                 }
@@ -300,6 +300,72 @@ export class SecureZodSchemaParser {
         }
     }
 
+    /**
+     * If a string literal starts at index i, returns the index of its closing quote; otherwise returns i.
+     * Lets the scanners below ignore dots, commas, parentheses and braces written inside descriptions.
+     */
+    private static skipString(str: string, i: number): number {
+        const quote = str[i]
+        if (quote !== '"' && quote !== "'" && quote !== '`') return i
+        for (let j = i + 1; j < str.length; j++) {
+            if (str[j] === '\\') {
+                j++
+                continue
+            }
+            if (str[j] === quote) return j
+        }
+        throw new Error('Unterminated string literal')
+    }
+
+    /** Index of the ")" matching the "(" at openIndex, ignoring parentheses inside strings; -1 if none. */
+    private static findClosingParen(str: string, openIndex: number): number {
+        let depth = 0
+        for (let i = openIndex; i < str.length; i++) {
+            const skipTo = this.skipString(str, i)
+            if (skipTo !== i) {
+                i = skipTo
+                continue
+            }
+            if (str[i] === '(') depth++
+            else if (str[i] === ')') {
+                depth--
+                if (depth === 0) return i
+            }
+        }
+        return -1
+    }
+
+    /** Splits on sep only outside strings and outside (), [] and {}. */
+    private static splitTopLevel(str: string, sep: string): string[] {
+        const parts: string[] = []
+        let depth = 0
+        let start = 0
+        for (let i = 0; i < str.length; i++) {
+            const skipTo = this.skipString(str, i)
+            if (skipTo !== i) {
+                i = skipTo
+                continue
+            }
+            const char = str[i]
+            if (char === '(' || char === '[' || char === '{') depth++
+            else if (char === ')' || char === ']' || char === '}') depth--
+            else if (char === sep && depth === 0) {
+                parts.push(str.substring(start, i))
+                start = i + 1
+            }
+        }
+        parts.push(str.substring(start))
+        return parts
+    }
+
+    private static isSingleStringLiteral(str: string): boolean {
+        return str.length >= 2 && (str[0] === '"' || str[0] === "'") && this.skipString(str, 0) === str.length - 1
+    }
+
+    private static unescapeString(str: string): string {
+        return str.replace(/\\(.)/g, (_match, ch) => (ch === 'n' ? '\n' : ch === 't' ? '\t' : ch))
+    }
+
     private static parseArguments(argsStr: string): any[] {
         // Remove outer parentheses
         const inner = argsStr.slice(1, -1).trim()
@@ -313,9 +379,9 @@ export class SecureZodSchemaParser {
         } else if (inner.match(/^\d+$/)) {
             // Number argument
             return [parseInt(inner, 10)]
-        } else if (inner.startsWith('"') && inner.endsWith('"')) {
-            // String argument
-            return [inner.slice(1, -1)]
+        } else if (this.isSingleStringLiteral(inner)) {
+            // String argument (a description may hold dots, commas, parentheses and escaped quotes)
+            return [this.unescapeString(inner.slice(1, -1))]
         } else {
             // Try to parse as comma-separated values
             return inner.split(',').map((arg) => {
@@ -360,20 +426,9 @@ export class SecureZodSchemaParser {
 
     private static extractArrayWithModifiers(typeStr: string): { arrayPart: string; modifiers: any[]; hasModifiers: boolean } {
         // Find the matching closing parenthesis for z.array(
-        let depth = 0
-        let arrayEndIndex = -1
-        let startIndex = typeStr.indexOf('z.array(') + 7 // Position after "z.array"
-
-        for (let i = startIndex; i < typeStr.length; i++) {
-            if (typeStr[i] === '(') depth++
-            else if (typeStr[i] === ')') {
-                depth--
-                if (depth === 0) {
-                    arrayEndIndex = i + 1
-                    break
-                }
-            }
-        }
+        const startIndex = typeStr.indexOf('z.array(') + 7 // Position of the "(" after "z.array"
+        const closeIndex = this.findClosingParen(typeStr, startIndex)
+        const arrayEndIndex = closeIndex === -1 ? -1 : closeIndex + 1
 
         if (arrayEndIndex === -1) {
             return { arrayPart: typeStr, modifiers: [], hasModifiers: false }
@@ -388,10 +443,10 @@ export class SecureZodSchemaParser {
 
         // Parse modifiers
         const modifiers: any[] = []
-        const modifierParts = remainingPart.substring(1).split('.')
+        const modifierParts = this.splitTopLevel(remainingPart.substring(1), '.')
 
         for (const part of modifierParts) {
-            const modMatch = part.match(/^(\w+)(\(.*\))?$/)
+            const modMatch = part.match(/^(\w+)(\([\s\S]*\))?$/)
             if (!modMatch) {
                 throw new Error(`Invalid modifier: ${part}`)
             }
@@ -418,6 +473,11 @@ export class SecureZodSchemaParser {
         let foundOpenBrace = false
 
         for (let i = startIndex; i < typeStr.length; i++) {
+            const skipTo = this.skipString(typeStr, i)
+            if (skipTo !== i) {
+                i = skipTo
+                continue
+            }
             if (typeStr[i] === '{') {
                 braceDepth++
                 foundOpenBrace = true
@@ -460,20 +520,11 @@ export class SecureZodSchemaParser {
             // Check for arguments
             let modArgs: any[] = []
             if (i < remainingPart.length && remainingPart[i] === '(') {
-                // Find matching closing paren, handling nested structures
-                let depth = 0
-                let argStart = i
-                for (let j = i; j < remainingPart.length; j++) {
-                    if (remainingPart[j] === '(') depth++
-                    else if (remainingPart[j] === ')') {
-                        depth--
-                        if (depth === 0) {
-                            const argsStr = remainingPart.substring(argStart, j + 1)
-                            modArgs = this.parseComplexArguments(argsStr)
-                            i = j + 1
-                            break
-                        }
-                    }
+                // Find matching closing paren, handling nested structures and strings
+                const j = this.findClosingParen(remainingPart, i)
+                if (j !== -1) {
+                    modArgs = this.parseComplexArguments(remainingPart.substring(i, j + 1))
+                    i = j + 1
                 }
             }
 
