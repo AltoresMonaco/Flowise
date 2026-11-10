@@ -23,6 +23,7 @@ import { customGet } from '../nodes/sequentialagents/commonUtils'
 import { checkDenyList, secureAxiosRequest, secureFetch } from './httpSecurity'
 import { ICommonObject, IDatabaseEntity, IFileUpload, IMessage, INodeData, IVariable, MessageContentImageUrl } from './Interface'
 import { getFileFromStorage } from './storageUtils'
+import { buildToolReplayMessages, ToolReplayOptions } from './toolReplay'
 
 export const numberOrExpressionRegex = '^(\\d+\\.?\\d*|{{.*}})$' //return true if string consists only numbers OR expression {{}}
 export const notEmptyRegex = '(.|\\s)*\\S(.|\\s)*' //return true if string is not empty or blank
@@ -744,13 +745,21 @@ export const getUserHome = (): string => {
 /**
  * Map ChatMessage to BaseMessage
  * @param {IChatMessage[]} chatmessages
+ * @param {ToolReplayOptions} options replayToolCalls: also replay the stored tool calls of each assistant turn
  * @returns {BaseMessage[]}
  */
-export const mapChatMessageToBaseMessage = async (chatmessages: any[] = [], orgId: string): Promise<BaseMessage[]> => {
+export const mapChatMessageToBaseMessage = async (
+    chatmessages: any[] = [],
+    orgId: string,
+    options: ToolReplayOptions = {}
+): Promise<BaseMessage[]> => {
     const chatHistory = []
 
     for (const message of chatmessages) {
         if (message.role === 'apiMessage' || message.type === 'apiMessage') {
+            if (options.replayToolCalls) {
+                chatHistory.push(...buildToolReplayMessages(message.usedTools, message.id, options.maxToolOutputChars))
+            }
             chatHistory.push(new AIMessage(message.content || ''))
         } else if (message.role === 'userMessage' || message.type === 'userMessage') {
             // check for image/files uploads

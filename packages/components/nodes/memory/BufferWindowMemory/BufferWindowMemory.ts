@@ -9,6 +9,7 @@ import {
     MemoryMethods
 } from '../../../src/Interface'
 import { getBaseClasses, mapChatMessageToBaseMessage } from '../../../src/utils'
+import { readToolReplayInputs, toolReplayInputs, ToolReplayOptions } from '../../../src/toolReplay'
 import { BufferWindowMemory, BufferWindowMemoryInput } from '@langchain/classic/memory'
 import { BaseMessage } from '@langchain/core/messages'
 import { DataSource } from 'typeorm'
@@ -57,7 +58,8 @@ class BufferWindowMemory_Memory implements INode {
                 type: 'string',
                 default: 'chat_history',
                 additionalParams: true
-            }
+            },
+            ...toolReplayInputs
         ]
     }
 
@@ -79,7 +81,8 @@ class BufferWindowMemory_Memory implements INode {
             appDataSource,
             databaseEntities,
             chatflowid,
-            orgId
+            orgId,
+            toolReplay: readToolReplayInputs(nodeData.inputs)
         }
 
         return new BufferWindowMemoryExtended(obj)
@@ -92,6 +95,7 @@ interface BufferMemoryExtendedInput {
     databaseEntities: IDatabaseEntity
     chatflowid: string
     orgId: string
+    toolReplay?: ToolReplayOptions
 }
 
 class BufferWindowMemoryExtended extends FlowiseWindowMemory implements MemoryMethods {
@@ -99,6 +103,7 @@ class BufferWindowMemoryExtended extends FlowiseWindowMemory implements MemoryMe
     databaseEntities: IDatabaseEntity
     chatflowid: string
     orgId: string
+    toolReplay: ToolReplayOptions = {}
     sessionId = ''
 
     constructor(fields: BufferWindowMemoryInput & BufferMemoryExtendedInput) {
@@ -108,6 +113,7 @@ class BufferWindowMemoryExtended extends FlowiseWindowMemory implements MemoryMe
         this.databaseEntities = fields.databaseEntities
         this.chatflowid = fields.chatflowid
         this.orgId = fields.orgId
+        this.toolReplay = fields.toolReplay ?? {}
     }
 
     async getChatMessages(
@@ -139,7 +145,7 @@ class BufferWindowMemoryExtended extends FlowiseWindowMemory implements MemoryMe
         }
 
         if (returnBaseMessages) {
-            return await mapChatMessageToBaseMessage(chatMessage, this.orgId)
+            return await mapChatMessageToBaseMessage(chatMessage, this.orgId, this.toolReplay)
         }
 
         let returnIMessages: IMessage[] = []
