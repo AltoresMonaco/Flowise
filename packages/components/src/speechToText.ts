@@ -18,7 +18,9 @@ export const convertSpeechToText = async (upload: IFileUpload, speechToTextConfi
     if (speechToTextConfig) {
         const credentialId = speechToTextConfig.credentialId as string
         const credentialData = await getCredentialData(credentialId ?? '', options)
-        const audio_file = await getFileFromStorage(upload.name, options.orgId, options.chatflowid, options.chatId)
+        // options.audioBuffer lets a caller transcribe audio that was never written to storage
+        const audio_file: Buffer =
+            options.audioBuffer ?? (await getFileFromStorage(upload.name, options.orgId, options.chatflowid, options.chatId))
 
         switch (speechToTextConfig.name) {
             case SpeechToTextType.OPENAI_WHISPER: {
@@ -46,7 +48,8 @@ export const convertSpeechToText = async (upload: IFileUpload, speechToTextConfi
 
                 const params = {
                     audio: audio_file,
-                    speaker_labels: false
+                    speaker_labels: false,
+                    language_code: speechToTextConfig?.language
                 }
 
                 const assemblyAITranscription = await assemblyAIClient.transcripts.transcribe(params)

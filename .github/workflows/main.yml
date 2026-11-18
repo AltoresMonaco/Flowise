@@ -42,12 +42,26 @@ jobs:
               with:
                   working-directory: ./
                   runTests: false
+            # The action's own `start` + `wait-on` gives up on the first refused connection
+            # ("Socket closed before the connection was established") instead of retrying, on
+            # localhost and on 127.0.0.1 alike. The server is started and awaited here instead.
+            - name: Start the server
+              working-directory: packages/server
+              run: |
+                  nohup pnpm start > "$RUNNER_TEMP/flowise-server.log" 2>&1 &
+                  for attempt in $(seq 1 60); do
+                      if curl --silent --fail --output /dev/null http://localhost:3000; then
+                          echo "server up after $attempt attempt(s)"
+                          exit 0
+                      fi
+                      sleep 2
+                  done
+                  echo "server did not answer on http://localhost:3000 within 120 s" >&2
+                  tail -n 100 "$RUNNER_TEMP/flowise-server.log" >&2
+                  exit 1
             - name: Cypress test
               uses: cypress-io/github-action@v7.1.5
               with:
                   install: false
                   working-directory: packages/server
-                  start: pnpm start
-                  wait-on: 'http://localhost:3000'
-                  wait-on-timeout: 120
                   browser: chrome

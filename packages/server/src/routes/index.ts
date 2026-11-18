@@ -50,6 +50,7 @@ import publicExecutionsRouter from './public-executions'
 import settingsRouter from './settings'
 import statsRouter from './stats'
 import textToSpeechRouter from './text-to-speech'
+import speechToTextRouter from './speech-to-text'
 import toolsRouter from './tools'
 import upsertHistoryRouter from './upsert-history'
 import validationRouter from './validation'
@@ -130,6 +131,7 @@ router.use('/executions', executionsRouter)
 router.use('/validation', validationRouter)
 router.use('/agentflowv2-generator', agentflowv2GeneratorRouter)
 router.use('/text-to-speech', textToSpeechRouter)
+router.use('/speech-to-text', speechToTextRouter)
 router.use('/custom-mcp-servers', customMcpServersRouter)
 router.use('/mcp-server', mcpServerRouter)
 router.use('/mcp', mcpEndpointRouter)
