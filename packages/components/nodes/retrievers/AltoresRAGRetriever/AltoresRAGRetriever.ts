@@ -9,7 +9,6 @@ interface AltoresRAGRetrieverInput extends BaseRetrieverInput {
     apiKey: string
     collection: string
     topK: number
-    dataClass: string
     minScore?: number
     filter?: ICommonObject
     retrievalMode?: string
@@ -22,7 +21,6 @@ class AltoresRAGRetriever extends BaseRetriever {
     apiKey: string
     collection: string
     topK: number
-    dataClass: string
     minScore?: number
     filter?: ICommonObject
     retrievalMode?: string
@@ -33,7 +31,6 @@ class AltoresRAGRetriever extends BaseRetriever {
         this.apiKey = fields.apiKey
         this.collection = fields.collection
         this.topK = fields.topK
-        this.dataClass = fields.dataClass || 'synthetic'
         this.minScore = fields.minScore
         this.filter = fields.filter
         this.retrievalMode = fields.retrievalMode
@@ -55,8 +52,7 @@ class AltoresRAGRetriever extends BaseRetriever {
             const response = await axios.post(url, body, {
                 headers: {
                     Authorization: `Bearer ${this.apiKey}`,
-                    'Content-Type': 'application/json',
-                    'X-Altores-Data-Class': this.dataClass
+                    'Content-Type': 'application/json'
                 }
             })
 
@@ -147,15 +143,6 @@ class AltoresRAGRetriever_Retrievers implements INode {
                 additionalParams: true
             },
             {
-                label: 'Data Class',
-                name: 'dataClass',
-                type: 'string',
-                description: 'Sent as the X-Altores-Data-Class header, required by the grounded engine',
-                default: 'synthetic',
-                optional: true,
-                additionalParams: true
-            },
-            {
                 label: 'Filter',
                 name: 'filter',
                 type: 'string',
@@ -183,7 +170,6 @@ class AltoresRAGRetriever_Retrievers implements INode {
         const collection = nodeData.inputs?.collection as string
         const topKInput = nodeData.inputs?.topK
         const minScoreInput = nodeData.inputs?.minScore
-        const dataClass = (nodeData.inputs?.dataClass as string) || 'synthetic'
         const filterStr = nodeData.inputs?.filter as string
         const retrievalMode = nodeData.inputs?.retrievalMode as string
 
@@ -204,7 +190,6 @@ class AltoresRAGRetriever_Retrievers implements INode {
             apiKey,
             collection,
             topK,
-            dataClass,
             minScore,
             filter,
             retrievalMode
